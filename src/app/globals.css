@@ -1,0 +1,10 @@
+/* Panggil ikon dari Google Fonts di sini */
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons+Outlined');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #4799eb;
+  --color-background-light: #f6f7f8;
+  --color-background-dark: #111921;
+  --font-display: "Inter", sans-serif;
+}
