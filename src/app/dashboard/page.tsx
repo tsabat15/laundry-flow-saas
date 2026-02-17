@@ -43,11 +43,9 @@ export default function ClientDashboard() {
   const [inputStoreLogoUrl, setInputStoreLogoUrl] = useState("");
   const [inputToken, setInputToken] = useState(""); 
   
-  // State khusus efek Drag & Drop
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // --- STATE FORM TERMINAL KASIR ---
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
@@ -62,7 +60,6 @@ export default function ClientDashboard() {
   const [manualAddonPrice, setManualAddonPrice] = useState<number | "">("");
   const [customAddonsList, setCustomAddonsList] = useState<{id: string, name: string, price: number}[]>([]);
 
-  // --- STATE FORM TAMBAH LAYANAN ---
   const [newSvcName, setNewSvcName] = useState("");
   const [newSvcPrice, setNewSvcPrice] = useState("");
   const [newSvcType, setNewSvcType] = useState("kg"); 
@@ -81,13 +78,16 @@ export default function ClientDashboard() {
 
   useEffect(() => {
     if (!user?.email) return;
+    
+    // PERBAIKAN: Meyakinkan TypeScript bahwa userEmail adalah string
+    const userEmail = user.email as string;
 
-    const qOrders = query(collection(db, "orders"), where("userEmail", "==", user.email), orderBy("createdAt", "desc"));
+    const qOrders = query(collection(db, "orders"), where("userEmail", "==", userEmail), orderBy("createdAt", "desc"));
     const unsubOrders = onSnapshot(qOrders, (snapshot) => {
       setOrders(snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() })));
     });
 
-    const unsubSettings = onSnapshot(doc(db, "storeSettings", user.email), (docSnap) => {
+    const unsubSettings = onSnapshot(doc(db, "storeSettings", userEmail), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setStoreServices(data.services || DEFAULT_SERVICES);
@@ -106,7 +106,7 @@ export default function ClientDashboard() {
 
         if(data.services && data.services.length > 0 && !selectedServiceId) setSelectedServiceId(data.services[0].id);
       } else {
-        setDoc(doc(db, "storeSettings", user.email), { 
+        setDoc(doc(db, "storeSettings", userEmail), { 
           services: DEFAULT_SERVICES, addons: DEFAULT_ADDONS, storeName: "Laundry Baru", status: "AKTIF"
         }, { merge: true });
       }
@@ -115,60 +115,35 @@ export default function ClientDashboard() {
     return () => { unsubOrders(); unsubSettings(); }; 
   }, [user]);
 
-  // ==========================================
-  // FUNGSI KOMPRES & UBAH GAMBAR KE BASE64
-  // ==========================================
   const handleImageFile = (file: File) => {
     if (!file || !file.type.startsWith('image/')) {
       alert("Tolong masukkan file berupa gambar (JPG/PNG)."); return;
     }
-
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = (event) => {
       const img = new Image();
       img.src = event.target?.result as string;
       img.onload = () => {
-        // Otomatis kompres ukuran gambar agar muat di Database (max lebar 300px)
         const canvas = document.createElement("canvas");
-        const MAX_WIDTH = 300;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > MAX_WIDTH) {
-          height = Math.round((height * MAX_WIDTH) / width);
-          width = MAX_WIDTH;
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx?.drawImage(img, 0, 0, width, height);
-
-        // Ubah jadi base64 (format webp agar jauh lebih ringan)
+        const MAX_WIDTH = 300; let width = img.width; let height = img.height;
+        if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d"); ctx?.drawImage(img, 0, 0, width, height);
         const compressedBase64 = canvas.toDataURL("image/webp", 0.8);
-        setInputStoreLogoUrl(compressedBase64); // Simpan hasil kompres ke state UI
+        setInputStoreLogoUrl(compressedBase64);
       };
     };
   };
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault(); setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleImageFile(e.dataTransfer.files[0]);
-    }
-  };
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleImageFile(e.target.files[0]);
-    }
-  };
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleImageFile(e.dataTransfer.files[0]); };
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) handleImageFile(e.target.files[0]); };
 
   const handleSaveStoreBranding = async () => {
     try {
-      await setDoc(doc(db, "storeSettings", user?.email || ""), { 
+      await setDoc(doc(db, "storeSettings", user?.email || "unknown"), { 
         storeName: inputStoreName, storeAddress: inputStoreAddress, storePhone: inputStorePhone, storeLogoUrl: inputStoreLogoUrl, fonnteToken: inputToken
       }, { merge: true });
       alert("Pengaturan Toko berhasil diperbarui!");
@@ -180,13 +155,13 @@ export default function ClientDashboard() {
     let assignedIcon = newSvcType === 'load' ? "local_washing_machine" : (newSvcType === 'pcs' ? "checkroom" : "waves");
     const newService = { id: "svc_" + Date.now(), name: newSvcName, price: Number(newSvcPrice), type: newSvcType, capacity: newSvcType === 'load' ? Number(newSvcCap) : 1, unit: newSvcType === 'load' ? `${newSvcCap} Kg` : (newSvcType === 'pcs' ? 'Pcs' : 'Kg'), icon: assignedIcon, minOrder: Number(newSvcMinOrder) || 1, roundUp: newSvcRoundUp };
     const updatedServices = [...storeServices, newService];
-    await setDoc(doc(db, "storeSettings", user?.email || ""), { services: updatedServices }, { merge: true });
+    await setDoc(doc(db, "storeSettings", user?.email || "unknown"), { services: updatedServices }, { merge: true });
     setNewSvcName(""); setNewSvcPrice(""); setNewSvcType("kg"); setNewSvcCap("10"); setNewSvcMinOrder("1"); setNewSvcRoundUp(false);
   };
   const handleDeleteService = async (id: string) => { 
     if (window.confirm("Yakin ingin menghapus layanan ini?")) {
       const updatedServices = storeServices.filter(s => s.id !== id);
-      await setDoc(doc(db, "storeSettings", user?.email || ""), { services: updatedServices }, { merge: true });
+      await setDoc(doc(db, "storeSettings", user?.email || "unknown"), { services: updatedServices }, { merge: true });
     }
   };
 
@@ -421,7 +396,7 @@ export default function ClientDashboard() {
           </div>
         </header>
 
-        {/* VIEW 1: DASHBOARD (Isi tabel dibiarkan persis sama seperti perbaikan layout sebelumnya) */}
+        {/* VIEW 1: DASHBOARD */}
         {currentView === "dashboard" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 sm:space-y-8 animate-in fade-in duration-300 min-w-0">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 w-full">
@@ -463,13 +438,14 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* VIEW 2: MARKETING (Dibiarkan sama) */}
+        {/* VIEW 2: MARKETING */}
         {currentView === "marketing" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 animate-in fade-in duration-300 min-w-0">
             {!fonnteToken && (
                <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3 mb-6 shadow-sm"><span className="material-icons-outlined text-red-500 shrink-0">warning</span><div className="min-w-0"><h4 className="font-bold text-sm">Fitur Terkunci</h4><p className="text-xs mt-0.5 leading-relaxed truncate whitespace-normal">Atur Token API Fonnte di menu <b>Pengaturan Toko</b> untuk mengaktifkan.</p></div></div>
             )}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col lg:flex-row min-h-[650px] w-full">
+              
               <div className="w-full lg:w-1/3 p-4 sm:p-6 border-b lg:border-b-0 lg:border-r border-slate-100 bg-slate-50/50 flex flex-col max-h-[300px] lg:max-h-none min-w-0">
                 <div className="mb-4"><h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-emerald-500">contacts</span> Target Penerima</h3><p className="text-xs text-slate-500 mt-1">Sistem mengambil kontak unik.</p></div>
                 <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-slate-200 mb-3 shadow-sm"><div className="flex items-center gap-2"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.length === uniqueCustomers.length && uniqueCustomers.length > 0} onChange={handleSelectAllMarketing}/> <span className="text-xs font-bold text-slate-700">Pilih Semua</span></div><span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-1 rounded-md">{selectedMarketingCustomers.length} Terpilih</span></div>
@@ -477,6 +453,7 @@ export default function ClientDashboard() {
                   {uniqueCustomers.length === 0 ? (<div className="p-6 text-center text-xs text-slate-400">Belum ada data pelanggan.</div>) : (uniqueCustomers.map((c, idx) => (<label key={idx} className="flex items-center gap-3 p-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.includes(c.phone)} onChange={() => handleToggleMarketingCustomer(c.phone)}/><div className="min-w-0"><p className="text-sm font-bold text-slate-800 truncate">{c.name}</p><p className="text-xs text-slate-500 font-medium truncate">{c.phone}</p></div></label>)))}
                 </div>
               </div>
+
               <div className="flex-1 p-4 sm:p-6 flex flex-col border-b lg:border-b-0 min-w-0">
                 <div className="mb-4"><h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">edit_note</span> Tulis Promo</h3><p className="text-xs text-slate-500 mt-1">Ketik isi pesan broadcast Anda.</p></div>
                 <div className="flex flex-wrap gap-2 mb-3"><button onClick={() => setBroadcastMessage(prev => prev + "[Nama]")} className="text-[11px] sm:text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">+ Sisipkan [Nama]</button><button onClick={() => setBroadcastMessage(prev => prev + "[Toko]")} className="text-[11px] sm:text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">+ Sisipkan [Toko]</button></div>
@@ -487,12 +464,13 @@ export default function ClientDashboard() {
                   <p className="text-center text-[10px] text-slate-400 font-medium">Sistem memberi jeda otomatis.</p>
                 </div>
               </div>
+
               <div className="w-full lg:w-1/3 p-6 border-l border-slate-100 bg-slate-100 flex flex-col items-center justify-center hidden sm:flex"><p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Preview Tampilan</p><div className="w-[280px] h-[500px] bg-white rounded-[2rem] shadow-xl border-4 border-slate-300 overflow-hidden flex flex-col relative relative"><div className="bg-[#075E54] h-14 flex items-center px-4 gap-3 text-white shrink-0"><span className="material-icons-outlined text-white">arrow_back</span><div className="w-8 h-8 bg-slate-300 rounded-full shrink-0 overflow-hidden"><img src="https://ui-avatars.com/api/?name=C&background=random" alt="Avatar"/></div><div className="font-semibold text-sm truncate leading-tight">Bapak Budi <br/><span className="text-[10px] font-normal opacity-80">Online</span></div></div><div className="flex-1 p-3 bg-[#E5DDD5] overflow-y-auto flex flex-col justify-end" style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundSize: 'contain' }}><div className="bg-white text-slate-800 p-2.5 rounded-lg rounded-tr-none shadow-sm max-w-[85%] self-end text-xs leading-relaxed whitespace-pre-wrap relative mb-2">{broadcastMessage.replace(/\[Nama\]/g, "Bapak Budi").replace(/\[Toko\]/g, storeName)}<div className="text-[9px] text-slate-400 text-right mt-1 opacity-80 flex justify-end items-center gap-1">10:45 <span className="material-icons-outlined text-[12px] text-blue-500">done_all</span></div></div></div><div className="bg-slate-100 h-14 shrink-0 flex items-center px-2 gap-2"><div className="flex-1 bg-white h-9 rounded-full flex items-center px-3 text-slate-400"><span className="material-icons-outlined text-sm">emoji_emotions</span> <span className="text-xs ml-2 opacity-60">Ketik pesan...</span></div><div className="w-9 h-9 bg-[#128C7E] rounded-full flex items-center justify-center text-white shrink-0"><span className="material-icons-outlined text-sm">mic</span></div></div></div></div>
             </div>
           </div>
         )}
 
-        {/* VIEW 3: PENGATURAN TOKO (DENGAN DRAG & DROP LOGO) */}
+        {/* VIEW 3: PENGATURAN TOKO */}
         {currentView === "settings" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
             
@@ -500,7 +478,6 @@ export default function ClientDashboard() {
               <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-6 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">storefront</span> Profil Bisnis & Identitas</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full">
                 
-                {/* Kolom Kiri: Teks Input */}
                 <div className="space-y-4 w-full min-w-0 flex flex-col justify-between">
                   <div className="space-y-2 w-full min-w-0">
                     <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Nama Laundry</label>
@@ -516,51 +493,28 @@ export default function ClientDashboard() {
                   </div>
                 </div>
 
-                {/* Kolom Kanan: Drag & Drop Logo */}
                 <div className="space-y-2 w-full min-w-0">
                   <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Logo Toko (Muncul di Struk)</label>
-                  
-                  {/* Area Drag & Drop */}
                   <div 
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current?.click()}
                     className={`relative w-full h-full min-h-[160px] rounded-2xl border-2 border-dashed flex flex-col items-center justify-center p-4 cursor-pointer transition-all overflow-hidden
                       ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'}
-                      ${inputStoreLogoUrl ? 'border-transparent bg-white p-0' : ''}
-                    `}
+                      ${inputStoreLogoUrl ? 'border-transparent bg-white p-0' : ''}`}
                   >
-                    <input 
-                      type="file" 
-                      accept="image/png, image/jpeg, image/jpg, image/webp" 
-                      className="hidden" 
-                      ref={fileInputRef} 
-                      onChange={handleFileInputChange} 
-                    />
-                    
+                    <input type="file" accept="image/png, image/jpeg, image/jpg, image/webp" className="hidden" ref={fileInputRef} onChange={handleFileInputChange} />
                     {inputStoreLogoUrl ? (
                       <div className="relative w-full h-full flex items-center justify-center bg-slate-50 group">
                         <img src={inputStoreLogoUrl} alt="Preview Logo" className="max-h-[160px] object-contain p-2" />
-                        <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                          <span className="text-white text-xs font-bold flex items-center gap-1"><span className="material-icons-outlined text-sm">edit</span> Ganti Logo</span>
-                        </div>
+                        <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white text-xs font-bold flex items-center gap-1"><span className="material-icons-outlined text-sm">edit</span> Ganti Logo</span></div>
                       </div>
                     ) : (
                       <div className="text-center">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 transition-colors ${isDragging ? 'bg-indigo-200 text-indigo-600' : 'bg-slate-200 text-slate-500'}`}>
-                          <span className="material-icons-outlined">cloud_upload</span>
-                        </div>
-                        <p className="text-sm font-bold text-slate-700">Tarik & Lepas gambar di sini</p>
-                        <p className="text-[10px] text-slate-400 mt-1">atau klik untuk mencari file (Max 1MB)</p>
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 transition-colors ${isDragging ? 'bg-indigo-200 text-indigo-600' : 'bg-slate-200 text-slate-500'}`}><span className="material-icons-outlined">cloud_upload</span></div>
+                        <p className="text-sm font-bold text-slate-700">Tarik & Lepas gambar di sini</p><p className="text-[10px] text-slate-400 mt-1">atau klik untuk mencari file (Max 1MB)</p>
                       </div>
                     )}
                   </div>
-                  {inputStoreLogoUrl && (
-                     <button onClick={(e) => { e.stopPropagation(); setInputStoreLogoUrl(""); }} className="text-[10px] text-red-500 hover:underline flex items-center gap-1 mt-2">
-                       <span className="material-icons-outlined text-[12px]">delete</span> Hapus Logo
-                     </button>
-                  )}
+                  {inputStoreLogoUrl && (<button onClick={(e) => { e.stopPropagation(); setInputStoreLogoUrl(""); }} className="text-[10px] text-red-500 hover:underline flex items-center gap-1 mt-2"><span className="material-icons-outlined text-[12px]">delete</span> Hapus Logo</button>)}
                 </div>
 
               </div>
@@ -611,21 +565,18 @@ export default function ClientDashboard() {
         )}
       </main>
 
-      {/* --- MODAL POS KASIR (TETAP SAMA SEPERTI SEBELUMNYA) --- */}
+      {/* --- MODAL POS KASIR --- */}
       {isOrderModalOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm p-0 sm:p-6 w-full h-full">
-          {/* ... (Kode modal Kasir) ... */}
           <div className="bg-slate-50 w-full max-w-6xl h-[90vh] sm:h-[95vh] rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-full sm:zoom-in-95 duration-200 min-w-0">
             <div className="bg-white px-4 sm:px-6 py-4 border-b border-slate-200 flex justify-between items-center shrink-0 w-full"><div className="flex items-center gap-3"><div className="w-8 h-8 sm:w-10 sm:h-10 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center"><span className="material-icons-outlined text-[18px] sm:text-[24px]">point_of_sale</span></div><div><h2 className="text-lg sm:text-xl font-bold text-slate-900 leading-tight">Terminal Kasir</h2><p className="text-[10px] sm:text-xs text-slate-500 font-medium">Sistem Cloud Aktif</p></div></div><button onClick={() => setIsOrderModalOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-full transition-colors"><span className="material-icons-outlined text-[20px]">close</span></button></div>
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 w-full min-w-0">
               <div className="flex flex-col lg:flex-row gap-4 sm:gap-6 min-h-full w-full">
                 
-                {/* Kolom 1 */}
                 <div className="w-full lg:w-1/4 flex flex-col gap-4 min-w-0">
                   <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-slate-200/60 w-full"><h3 className="font-bold text-slate-800 text-sm tracking-wide mb-3 sm:mb-4">Data Pelanggan</h3><div className="space-y-3 sm:space-y-4 w-full"><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nama Lengkap</label><input value={customerName} onChange={(e)=>setCustomerName(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Masukkan nama..."/></div><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nomor WhatsApp</label><input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/></div><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Alamat Lengkap</label><textarea value={customerAddress} onChange={(e)=>setCustomerAddress(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none" rows={2} placeholder="Jalan..."></textarea></div></div></div>
                 </div>
                 
-                {/* Kolom 2 */}
                 <div className="w-full lg:w-5/12 flex flex-col gap-4 min-w-0">
                   <div className="flex items-center justify-between px-1 w-full"><h3 className="font-bold text-slate-800 text-base sm:text-lg">Menu Layanan</h3><div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm cursor-pointer shrink-0"><button onClick={() => setIsExpress(false)} className={`px-3 sm:px-4 py-1.5 text-[11px] sm:text-xs font-bold rounded-md transition-colors ${!isExpress ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-600'}`}>Reguler</button><button onClick={() => setIsExpress(true)} className={`px-3 sm:px-4 py-1.5 text-[11px] sm:text-xs font-bold rounded-md transition-colors ${isExpress ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-500 hover:text-amber-500'}`}>Kilat</button></div></div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 w-full">
@@ -640,7 +591,6 @@ export default function ClientDashboard() {
                   </div>
                 </div>
                 
-                {/* Kolom 3 */}
                 <div className="w-full lg:w-1/3 flex flex-col h-auto min-w-0">
                   <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full w-full">
                     <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50/50"><h3 className="font-bold text-slate-800 text-sm tracking-wide">Kalkulasi Tagihan</h3></div>
