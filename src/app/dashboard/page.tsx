@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
@@ -53,6 +54,8 @@ export default function ClientDashboard() {
   const [customerPhone, setCustomerPhone] = useState("");
   
   const [selectedServiceId, setSelectedServiceId] = useState("");
+  const [customServiceName, setCustomServiceName] = useState("");
+  const [customServicePrice, setCustomServicePrice] = useState<number | "">("");
   const [inputValue, setInputValue] = useState<number | "">(1); 
   
   // 🛒 STATE KERANJANG (CART)
@@ -102,7 +105,7 @@ export default function ClientDashboard() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setStoreServices(data.services || DEFAULT_SERVICES);
-        setStorePromos(data.promos || []); // Load Promo
+        setStorePromos(data.promos || []); 
         setFonnteToken(data.fonnteToken || "");
         setInputToken(data.fonnteToken || "");
         setStoreName(data.storeName || "LaundryFlow");
@@ -292,30 +295,47 @@ export default function ClientDashboard() {
 
   // --- LOGIKA KASIR (KERANJANG & DISKON) ---
   const handleAddToCart = () => {
-    const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0];
-    if(!s) return;
-
-    let qty = Number(inputValue) || 0;
-    if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
-
-    let basePrice = 0;
-    if (s.type === "load") { 
-      basePrice = Math.ceil(qty / s.capacity) * s.price; 
+    let activeServiceName = ""; 
+    let activeBasePrice = 0; 
+    let activeUnit = "Kg"; 
+    
+    if (selectedServiceId === "custom") { 
+      activeServiceName = customServiceName || "Layanan Kustom"; 
+      activeBasePrice = Number(customServicePrice) || 0; 
+      activeUnit = "Unit"; 
     } else { 
-      let effectiveVal = Math.max(qty, s.minOrder || 1);
-      basePrice = effectiveVal * s.price; 
+      const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0]; 
+      if (s) { 
+        activeServiceName = s.name; 
+        activeUnit = s.unit;
+        let qty = Number(inputValue) || 0;
+        if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
+
+        if (s.type === "load") { 
+          activeBasePrice = Math.ceil(qty / s.capacity) * s.price; 
+        } else { 
+          let effectiveVal = Math.max(qty, s.minOrder || 1);
+          activeBasePrice = effectiveVal * s.price; 
+        }
+      } 
     }
+
+    if (activeBasePrice === 0 && selectedServiceId !== "custom") return;
 
     setCart([...cart, { 
       id: Date.now().toString(), 
-      serviceId: s.id,
-      serviceName: s.name, 
-      qty: qty, 
-      unit: s.unit,
-      basePrice: basePrice,
-      totalPrice: basePrice 
+      serviceId: selectedServiceId,
+      serviceName: activeServiceName, 
+      qty: Number(inputValue) || 1, 
+      unit: activeUnit,
+      basePrice: activeBasePrice,
+      totalPrice: activeBasePrice 
     }]);
     setInputValue(1);
+    if(selectedServiceId === "custom") {
+      setCustomServiceName("");
+      setCustomServicePrice("");
+    }
   };
 
   const handleRemoveFromCart = (idToRemove: string) => {
@@ -353,7 +373,7 @@ export default function ClientDashboard() {
         invoiceId, 
         customer: customerName, 
         customerPhone, 
-        initials: customerName.charAt(0).toUpperCase(), 
+        initials: (customerName || "U").charAt(0).toUpperCase(), 
         service: combinedServicesText, 
         status: "ANTREAN", 
         paymentStatus: isPaidNow ? "LUNAS" : "BELUM_LUNAS", 
@@ -491,7 +511,10 @@ export default function ClientDashboard() {
           <button onClick={() => setCurrentView("analytics")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "analytics" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">insights</span><span className="font-semibold text-sm">Laporan & Grafik</span></button>
           
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Marketing</div>
+          
+          {/* ✅ TOMBOL PEMASARAN WA KEMBALI DI SINI */}
           <button onClick={() => setCurrentView("marketing")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "marketing" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">campaign</span><span className="font-semibold text-sm">Pemasaran WA</span></button>
+          
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Sistem</div>
           <button onClick={() => setCurrentView("settings")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "settings" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">tune</span><span className="font-semibold text-sm">Pengaturan Toko</span></button>
         </nav>
@@ -504,7 +527,10 @@ export default function ClientDashboard() {
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 w-full bg-white border-t border-slate-200 flex justify-around items-center z-40 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] pb-safe">
         <button onClick={() => setCurrentView("dashboard")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">dashboard</span><span className="text-[9px] font-bold">Kasir</span></button>
         <button onClick={() => setCurrentView("analytics")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'analytics' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">insights</span><span className="text-[9px] font-bold">Laporan</span></button>
+        
+        {/* ✅ TOMBOL PEMASARAN WA MOBILE KEMBALI DI SINI */}
         <button onClick={() => setCurrentView("marketing")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'marketing' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">campaign</span><span className="text-[9px] font-bold">Promo</span></button>
+        
         <button onClick={() => setCurrentView("settings")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'settings' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">tune</span><span className="text-[9px] font-bold">Toko</span></button>
       </nav>
 
@@ -677,7 +703,7 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* VIEW 2: MARKETING (KINI SUDAH KEMBALI) */}
+        {/* ✅ VIEW 2: MARKETING (SUDAH DIKEMBALIKAN KE SINI) */}
         {currentView === "marketing" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 animate-in fade-in duration-300 min-w-0">
             {!fonnteToken && (
@@ -758,7 +784,7 @@ export default function ClientDashboard() {
                 <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center shrink-0 hidden sm:flex"><span className="material-icons-outlined text-[24px]">forum</span></div>
                 <div className="flex-1 w-full min-w-0">
                   <h3 className="font-bold text-base sm:text-lg text-emerald-900">Integrasi WhatsApp API</h3>
-                  <p className="text-xs sm:text-sm text-emerald-700/80 mt-1 mb-4 leading-relaxed break-words">Hubungkan sistem kasir dengan WhatsApp toko Anda. <a href="https://fonnte.com" target="_blank" className="underline font-bold ml-1 text-emerald-700 hover:text-emerald-900">Dapatkan API Token Gratis di Fonnte.</a></p>
+                  <p className="text-xs sm:text-sm text-emerald-700/80 mt-1 mb-4 leading-relaxed break-words">Hubungkan sistem kasir dengan WhatsApp toko Anda. <a href="https://fonnte.com" target="_blank" rel="noopener noreferrer" className="underline font-bold ml-1 text-emerald-700 hover:text-emerald-900">Dapatkan API Token Gratis di Fonnte.</a></p>
                   <div className="flex flex-col sm:flex-row gap-3 w-full min-w-0"><input type="text" value={inputToken} onChange={e=>setInputToken(e.target.value)} className="flex-1 w-full text-sm py-3 sm:py-2.5 px-4 border border-emerald-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white min-w-0" placeholder="Masukkan Token Fonnte..."/><button onClick={handleSaveStoreBranding} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 sm:py-2.5 px-6 rounded-lg text-sm transition-colors shadow-sm whitespace-nowrap shrink-0">Simpan Token</button></div>
                   {fonnteToken && (<div className="mt-3 flex items-center gap-2 text-[10px] sm:text-xs font-bold text-emerald-600 bg-white w-max px-3 py-1.5 rounded-md border border-emerald-100 truncate"><span className="material-icons-outlined text-[14px]">check_circle</span> Token Fonnte Tersimpan & Aktif</div>)}
                 </div>
