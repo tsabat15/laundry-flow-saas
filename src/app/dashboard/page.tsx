@@ -4,31 +4,33 @@ import { useAuth } from "../../context/AuthContext";
 import { auth, db } from "../../lib/firebase"; 
 import { useRouter } from "next/navigation";
 import { collection, addDoc, updateDoc, doc, deleteDoc, setDoc, onSnapshot, query, where, orderBy, serverTimestamp } from "firebase/firestore";
+// IMPORT LIBRARY GRAFIK
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const DEFAULT_SERVICES = [
   { id: "svc_1", name: "Cuci Saja", price: 8000, type: "load", capacity: 10, unit: "10 Kg", icon: "local_washing_machine", minOrder: 1, roundUp: false },
-  { id: "svc_2", name: "Cuci Setrika", price: 5000, type: "kg", capacity: 1, unit: "Kg", icon: "waves", minOrder: 3, roundUp: true },
-  { id: "svc_3", name: "Setrika Saja", price: 4000, type: "kg", capacity: 1, unit: "Kg", icon: "iron", minOrder: 1, roundUp: false },
-  { id: "svc_4", name: "Cuci Satuan", price: 15000, type: "pcs", capacity: 1, unit: "Pcs", icon: "checkroom", minOrder: 1, roundUp: false }
-];
-const DEFAULT_ADDONS = [
-  { id: "add_1", name: "Ekstra Wangi", price: 2000 },
-  { id: "add_2", name: "Pisah Luntur", price: 5000 },
+  { id: "svc_2", name: "Cuci Setrika", price: 5000, type: "kg", capacity: 1, unit: "Kg", icon: "waves", minOrder: 3, roundUp: true }
 ];
 
 export default function ClientDashboard() {
   const { user, loading } = useAuth();
   const router = useRouter();
 
+  // STATE UNTUK FIX RENDER GRAFIK
+  const [isMounted, setIsMounted] = useState(false);
+
   const [currentView, setCurrentView] = useState("dashboard"); 
   const [activeTab, setActiveTab] = useState("proses");
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false); 
   const [searchQuery, setSearchQuery] = useState("");
+  
+  // --- STATE FILTER PEMBAYARAN BARU ---
+  const [paymentFilter, setPaymentFilter] = useState("SEMUA"); // SEMUA, LUNAS, BELUM_LUNAS
 
   const [orders, setOrders] = useState<any[]>([]);
   const [storeServices, setStoreServices] = useState<any[]>([]);
-  const [storeAddons, setStoreAddons] = useState<any[]>([]);
+  const [storePromos, setStorePromos] = useState<any[]>([]); // 🏷️ State Promo
   
   const [storeName, setStoreName] = useState("LaundryFlow");
   const [storeAddress, setStoreAddress] = useState("");
@@ -46,20 +48,21 @@ export default function ClientDashboard() {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // --- STATE MODAL KASIR ---
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [customerAddress, setCustomerAddress] = useState("");
+  
   const [selectedServiceId, setSelectedServiceId] = useState("");
-  const [customServiceName, setCustomServiceName] = useState("");
-  const [customServicePrice, setCustomServicePrice] = useState<number | "">("");
-  const [isExpress, setIsExpress] = useState(false);
   const [inputValue, setInputValue] = useState<number | "">(1); 
-  const [selectedAddons, setSelectedAddons] = useState<string[]>([]);
-  const [showManualAddon, setShowManualAddon] = useState(false);
-  const [manualAddonName, setManualAddonName] = useState("");
-  const [manualAddonPrice, setManualAddonPrice] = useState<number | "">("");
-  const [customAddonsList, setCustomAddonsList] = useState<{id: string, name: string, price: number}[]>([]);
+  
+  // 🛒 STATE KERANJANG (CART)
+  const [cart, setCart] = useState<any[]>([]);
+  
+  // --- STATE KASIR (PEMBAYARAN & PROMO) ---
+  const [selectedPromoId, setSelectedPromoId] = useState("");
+  const [isPaidNow, setIsPaidNow] = useState(true); // Default: Langsung Bayar Lunas
 
+  // --- STATE PENGATURAN LAYANAN & PROMO---
   const [newSvcName, setNewSvcName] = useState("");
   const [newSvcPrice, setNewSvcPrice] = useState("");
   const [newSvcType, setNewSvcType] = useState("kg"); 
@@ -67,10 +70,20 @@ export default function ClientDashboard() {
   const [newSvcMinOrder, setNewSvcMinOrder] = useState("1"); 
   const [newSvcRoundUp, setNewSvcRoundUp] = useState(false); 
 
+  const [newPromoName, setNewPromoName] = useState("");
+  const [newPromoValue, setNewPromoValue] = useState("");
+  const [newPromoType, setNewPromoType] = useState("percent"); // percent atau fixed
+
+  // --- STATE MARKETING ---
   const [broadcastMessage, setBroadcastMessage] = useState("Halo Kak [Nama],\n\nKami ada promo spesial nih dari toko kami! Diskon 20% untuk cuci bedcover minggu ini.\n\nDitunggu kedatangannya ya!\n\n*Balas STOP untuk berhenti menerima info promo.");
   const [selectedMarketingCustomers, setSelectedMarketingCustomers] = useState<string[]>([]);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [broadcastProgress, setBroadcastProgress] = useState(0);
+
+  // EFECT MOUNTED (Agar Grafik Muncul)
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     if (!loading && !user) router.push("/login");
@@ -78,8 +91,6 @@ export default function ClientDashboard() {
 
   useEffect(() => {
     if (!user?.email) return;
-    
-    // PERBAIKAN: Meyakinkan TypeScript bahwa userEmail adalah string
     const userEmail = user.email as string;
 
     const qOrders = query(collection(db, "orders"), where("userEmail", "==", userEmail), orderBy("createdAt", "desc"));
@@ -91,7 +102,7 @@ export default function ClientDashboard() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setStoreServices(data.services || DEFAULT_SERVICES);
-        setStoreAddons(data.addons || DEFAULT_ADDONS);
+        setStorePromos(data.promos || []); // Load Promo
         setFonnteToken(data.fonnteToken || "");
         setInputToken(data.fonnteToken || "");
         setStoreName(data.storeName || "LaundryFlow");
@@ -107,7 +118,7 @@ export default function ClientDashboard() {
         if(data.services && data.services.length > 0 && !selectedServiceId) setSelectedServiceId(data.services[0].id);
       } else {
         setDoc(doc(db, "storeSettings", userEmail), { 
-          services: DEFAULT_SERVICES, addons: DEFAULT_ADDONS, storeName: "Laundry Baru", status: "AKTIF"
+          services: DEFAULT_SERVICES, storeName: "Laundry Baru", status: "AKTIF"
         }, { merge: true });
       }
     });
@@ -115,23 +126,74 @@ export default function ClientDashboard() {
     return () => { unsubOrders(); unsubSettings(); }; 
   }, [user]);
 
-  const handleImageFile = (file: File) => {
-    if (!file || !file.type.startsWith('image/')) {
-      alert("Tolong masukkan file berupa gambar (JPG/PNG)."); return;
+  // --- LOGIKA HITUNG PENDAPATAN & PIUTANG ---
+  const todayStr = new Date().toLocaleDateString("id-ID", { day: '2-digit', month: 'short', year: 'numeric' });
+  
+  const totalPendapatanGlobal = orders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+  
+  const totalPiutang = orders
+    .filter(o => o.paymentStatus === "BELUM_LUNAS")
+    .reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+
+  const totalPendapatanHariIni = orders
+    .filter(o => o.dateIn && o.dateIn.startsWith(todayStr) && o.paymentStatus === "LUNAS")
+    .reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+
+  const pesananAktif = orders.filter(o => o.status !== "SELESAI").length;
+
+  // --- LOGIKA GRAFIK REVENUE 7 HARI TERAKHIR ---
+  const getRevenueData = () => {
+    const data = [];
+    const today = new Date();
+    
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateKey = d.toLocaleDateString("id-ID", { day: '2-digit', month: 'short', year: 'numeric' }); 
+      const shortLabel = d.toLocaleDateString("id-ID", { day: 'numeric', month: 'short' }); 
+      
+      const totalForDay = orders
+        .filter(o => o.dateIn && o.dateIn.startsWith(dateKey) && o.paymentStatus === "LUNAS") 
+        .reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+
+      data.push({
+        name: shortLabel,
+        total: totalForDay,
+      });
     }
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
+    return data;
+  };
+
+  const revenueData = getRevenueData();
+  const hasData = revenueData.some(d => d.total > 0);
+
+  // --- FUNGSI PROMO ---
+  const handleAddPromo = async () => {
+    if (!newPromoName || !newPromoValue) return;
+    const promoObj = { id: "prm_" + Date.now(), name: newPromoName, value: Number(newPromoValue), type: newPromoType };
+    const updatedPromos = [...storePromos, promoObj];
+    await setDoc(doc(db, "storeSettings", user?.email as string), { promos: updatedPromos }, { merge: true });
+    setNewPromoName(""); setNewPromoValue("");
+  };
+
+  const handleDeletePromo = async (id: string) => {
+    const updated = storePromos.filter(p => p.id !== id);
+    await setDoc(doc(db, "storeSettings", user?.email as string), { promos: updated }, { merge: true });
+  };
+
+  // --- FUNGSI PENGATURAN TOKO ---
+  const handleImageFile = (file: File) => {
+    if (!file || !file.type.startsWith('image/')) { alert("Tolong masukkan file berupa gambar (JPG/PNG)."); return; }
+    const reader = new FileReader(); reader.readAsDataURL(file);
     reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
+      const img = new Image(); img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement("canvas");
         const MAX_WIDTH = 300; let width = img.width; let height = img.height;
         if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext("2d"); ctx?.drawImage(img, 0, 0, width, height);
-        const compressedBase64 = canvas.toDataURL("image/webp", 0.8);
-        setInputStoreLogoUrl(compressedBase64);
+        setInputStoreLogoUrl(canvas.toDataURL("image/webp", 0.8));
       };
     };
   };
@@ -143,9 +205,7 @@ export default function ClientDashboard() {
 
   const handleSaveStoreBranding = async () => {
     try {
-      await setDoc(doc(db, "storeSettings", user?.email || "unknown"), { 
-        storeName: inputStoreName, storeAddress: inputStoreAddress, storePhone: inputStorePhone, storeLogoUrl: inputStoreLogoUrl, fonnteToken: inputToken
-      }, { merge: true });
+      await setDoc(doc(db, "storeSettings", user?.email || "unknown"), { storeName: inputStoreName, storeAddress: inputStoreAddress, storePhone: inputStorePhone, storeLogoUrl: inputStoreLogoUrl, fonnteToken: inputToken }, { merge: true });
       alert("Pengaturan Toko berhasil diperbarui!");
     } catch (error) { alert("Gagal menyimpan."); }
   };
@@ -165,16 +225,10 @@ export default function ClientDashboard() {
     }
   };
 
+  // --- FUNGSI MARKETING ---
   const uniqueCustomers = Array.from(new Map(orders.filter(o => o.customerPhone && o.customerPhone.trim() !== "").map(o => [o.customerPhone, { name: o.customer, phone: o.customerPhone }])).values());
-
-  const handleSelectAllMarketing = () => {
-    if (selectedMarketingCustomers.length === uniqueCustomers.length) setSelectedMarketingCustomers([]); 
-    else setSelectedMarketingCustomers(uniqueCustomers.map(c => c.phone)); 
-  };
-
-  const handleToggleMarketingCustomer = (phone: string) => {
-    setSelectedMarketingCustomers(prev => prev.includes(phone) ? prev.filter(p => p !== phone) : [...prev, phone]);
-  };
+  const handleSelectAllMarketing = () => { if (selectedMarketingCustomers.length === uniqueCustomers.length) setSelectedMarketingCustomers([]); else setSelectedMarketingCustomers(uniqueCustomers.map(c => c.phone)); };
+  const handleToggleMarketingCustomer = (phone: string) => { setSelectedMarketingCustomers(prev => prev.includes(phone) ? prev.filter(p => p !== phone) : [...prev, phone]); };
 
   const handleSendBroadcast = async () => {
     if (selectedMarketingCustomers.length === 0) { alert("Pilih minimal 1 pelanggan!"); return; }
@@ -189,9 +243,7 @@ export default function ClientDashboard() {
         let phone = target.phone.replace(/\D/g, '');
         if (phone.startsWith('0')) phone = '62' + phone.substring(1); else if (!phone.startsWith('62')) phone = '62' + phone;
         const finalMessage = broadcastMessage.replace(/\[Nama\]/g, target.name).replace(/\[Toko\]/g, storeName);
-        try {
-          await fetch("https://api.fonnte.com/send", { method: "POST", headers: { "Authorization": fonnteToken }, body: new URLSearchParams({ target: phone, message: finalMessage, delay: '2', countryCode: '62' }) });
-        } catch (error) { console.error("Gagal", target.name); }
+        try { await fetch("https://api.fonnte.com/send", { method: "POST", headers: { "Authorization": fonnteToken }, body: new URLSearchParams({ target: phone, message: finalMessage, delay: '2', countryCode: '62' }) }); } catch (error) { console.error("Gagal", target.name); }
         setBroadcastProgress(i + 1);
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -204,7 +256,7 @@ export default function ClientDashboard() {
     let phone = order.customerPhone.replace(/\D/g, '');
     if (phone.startsWith('0')) phone = '62' + phone.substring(1); else if (!phone.startsWith('62')) phone = '62' + phone;
 
-    const message = `Halo Kak *${order.customer}*,\n\nCucian Anda dengan No. Nota *${order.invoiceId}* di *${storeName}* saat ini sudah *SIAP DIAMBIL*.\n\nLayanan: ${order.service}\nTotal Tagihan: *${formatRp(order.totalPrice || 0)}*\n\nTerima kasih! 🙏`;
+    const message = `Halo Kak *${order.customer}*,\n\nCucian Anda dengan No. Nota *${order.invoiceId}* di *${storeName}* saat ini sudah *SIAP DIAMBIL*.\n\nLayanan:\n${order.service.replace(/, /g, '\n')}\n\nTotal Tagihan: *${formatRp(order.totalPrice || 0)}*\n\nTerima kasih! 🙏`;
 
     if (!fonnteToken) {
       alert("Token API Fonnte belum diatur. Menggunakan mode manual WA.");
@@ -217,85 +269,152 @@ export default function ClientDashboard() {
     } catch (error) { alert("Terjadi kesalahan sistem saat menghubungi WA."); }
   };
 
+  // --- FUNGSI UPDATE ORDER ---
   const handleStatusChange = async (firebaseId: string, currentOrder: any, newStatus: string) => {
     try {
       let timeOut = currentOrder.dateOut;
-      if (newStatus === "SIAP AMBIL" && currentOrder.status !== "SIAP AMBIL") {
-        if (window.confirm(`Status diubah ke "Siap Ambil". Kirim WhatsApp ke pelanggan?`)) sendWhatsAppNotification(currentOrder); 
-      }
+      if (newStatus === "SIAP AMBIL" && currentOrder.status !== "SIAP AMBIL") { if (window.confirm(`Status diubah ke "Siap Ambil". Kirim WhatsApp ke pelanggan?`)) sendWhatsAppNotification(currentOrder); }
       if (newStatus === "SELESAI" && currentOrder.status !== "SELESAI") timeOut = new Date().toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       else if (newStatus !== "SELESAI") timeOut = null;
       await updateDoc(doc(db, "orders", firebaseId), { status: newStatus, dateOut: timeOut });
     } catch (error) { alert("Gagal mengubah status."); }
   };
 
+  const markAsPaid = async (firebaseId: string) => {
+    if (window.confirm("Tandai pesanan ini sebagai LUNAS?")) {
+      await updateDoc(doc(db, "orders", firebaseId), { paymentStatus: "LUNAS" });
+    }
+  };
+
   const handleDeleteOrder = async (firebaseId: string, customerName: string) => {
     if (window.confirm(`Yakin membatalkan pesanan milik "${customerName}"?`)) { try { await deleteDoc(doc(db, "orders", firebaseId)); } catch (error) { alert("Gagal membatalkan pesanan."); } }
   };
 
-  const printThermalReceipt = (orderData: any, addonsList: any[]) => { 
+  // --- LOGIKA KASIR (KERANJANG & DISKON) ---
+  const handleAddToCart = () => {
+    const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0];
+    if(!s) return;
+
+    let qty = Number(inputValue) || 0;
+    if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
+
+    let basePrice = 0;
+    if (s.type === "load") { 
+      basePrice = Math.ceil(qty / s.capacity) * s.price; 
+    } else { 
+      let effectiveVal = Math.max(qty, s.minOrder || 1);
+      basePrice = effectiveVal * s.price; 
+    }
+
+    setCart([...cart, { 
+      id: Date.now().toString(), 
+      serviceId: s.id,
+      serviceName: s.name, 
+      qty: qty, 
+      unit: s.unit,
+      basePrice: basePrice,
+      totalPrice: basePrice 
+    }]);
+    setInputValue(1);
+  };
+
+  const handleRemoveFromCart = (idToRemove: string) => {
+    setCart(cart.filter(item => item.id !== idToRemove));
+  };
+
+  // Kalkulasi Diskon Global
+  let totalKotor = cart.reduce((s, i) => s + i.basePrice, 0);
+  let discountTotal = 0;
+  const activePromo = storePromos.find(p => p.id === selectedPromoId);
+  
+  if (activePromo) {
+    if (activePromo.type === "percent") {
+      discountTotal = (totalKotor * activePromo.value) / 100;
+    } else {
+      discountTotal = activePromo.value; 
+    }
+  }
+  
+  const grandTotal = Math.max(0, totalKotor - discountTotal);
+
+  // --- FUNGSI SIMPAN ORDER FINAL ---
+  const handleSaveOrder = async (shouldPrint: boolean) => {
+    if (!customerName) { alert("Masukkan nama pelanggan!"); return; }
+    if (cart.length === 0) { alert("Keranjang kosong!"); return;}
+    
+    setIsSaving(true);
+    try {
+      const now = new Date(); const formattedDate = now.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const invoiceId = `#INV-${Math.floor(1000 + Math.random() * 9000)}`;
+      
+      const combinedServicesText = cart.map(item => `${item.serviceName} (${item.qty} ${item.unit})`).join(', ');
+
+      const newOrderData = { 
+        invoiceId, 
+        customer: customerName, 
+        customerPhone, 
+        initials: customerName.charAt(0).toUpperCase(), 
+        service: combinedServicesText, 
+        status: "ANTREAN", 
+        paymentStatus: isPaidNow ? "LUNAS" : "BELUM_LUNAS", 
+        dateIn: formattedDate, 
+        dateOut: null, 
+        totalPrice: grandTotal,
+        discountGiven: discountTotal, 
+        cartDetails: cart, 
+        userEmail: user?.email, 
+        createdAt: serverTimestamp() 
+      };
+      
+      await addDoc(collection(db, "orders"), newOrderData);
+      
+      if (shouldPrint) printThermalReceipt(newOrderData, cart, discountTotal, grandTotal, isPaidNow);
+      
+      // Reset Modal & Keranjang
+      setIsOrderModalOpen(false); 
+      setCustomerName(""); setCustomerPhone(""); 
+      setCart([]); setInputValue(1); setSelectedPromoId(""); setIsPaidNow(true);
+      if(storeServices.length > 0) setSelectedServiceId(storeServices[0].id);
+    } catch (error) { 
+      alert("Gagal menyimpan pesanan."); 
+    } finally { 
+      setIsSaving(false); 
+    }
+  };
+
+  // --- FUNGSI CETAK STRUK ---
+  const printThermalReceipt = (orderData: any, cartItems: any[], discount: number, finalTotal: number, paidNow: boolean) => { 
     const printWindow = window.open('', '_blank', 'width=400,height=600');
-    if (!printWindow) { alert("Izinkan pop-up untuk mencetak struk."); return; }
+    if (!printWindow) return;
     
     const logoHtml = storeLogoUrl ? `<div style="text-align:center; margin-bottom:10px;"><img src="${storeLogoUrl}" style="max-width:80px; max-height:80px; filter: grayscale(100%);" alt="Logo"/></div>` : '';
-    const addressHtml = storeAddress ? `<div style="text-align:center; font-size:10px; margin-top:4px;">${storeAddress}</div>` : '';
-    const phoneHtml = storePhone ? `<div style="text-align:center; font-size:10px;">WA: ${storePhone}</div>` : '';
+    const cartHtml = cartItems.map(item => `<div class="flex-between" style="font-size:10px;margin-top:4px;"><span>${item.serviceName} (${item.qty}${item.unit})</span><span>${formatRp(item.basePrice)}</span></div>`).join('');
+    
+    const discountHtml = discount > 0 ? `<div class="flex-between" style="font-size:10px;margin-top:4px;color:#555;"><span>Diskon Promo</span><span>-${formatRp(discount)}</span></div>` : '';
+    const paymentStatusHtml = paidNow ? `<div style="text-align:center; font-weight:bold; font-size:12px; margin-top:8px; border: 1px solid #000; padding: 2px;">LUNAS</div>` : `<div style="text-align:center; font-weight:bold; font-size:12px; margin-top:8px; border: 1px dotted #000; padding: 2px;">BELUM BAYAR (TAGIHAN)</div>`;
 
     const html = `<html><head><style>@page { margin: 0; } body { font-family: monospace; width: 58mm; padding: 10px; font-size: 12px; color: #000; } .flex-between { display: flex; justify-content: space-between; }</style></head><body>
       ${logoHtml}
       <div style="text-align:center;font-weight:bold;font-size:16px;">${storeName.toUpperCase()}</div>
-      ${addressHtml}
-      ${phoneHtml}
+      <div style="text-align:center;font-size:10px;margin-top:4px;">${storeAddress} <br/> WA: ${storePhone}</div>
       <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
-      <div style="text-align:center;font-size:10px;">Nota: ${orderData.invoiceId} <br/> ${orderData.dateIn}</div>
+      <div style="font-size:10px;">Nota: ${orderData.invoiceId} <br/> Tgl: ${orderData.dateIn} <br/> Plg: <b>${orderData.customer}</b></div>
       <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
-      <div style="font-size:10px;">Pelanggan: <span style="font-weight:bold;">${orderData.customer}</span></div>
+      
+      <div class="flex-between" style="font-weight:bold;font-size:10px;"><span>ITEM</span><span>HARGA</span></div>
+      ${cartHtml}
+      ${discountHtml}
+      
       <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
-      <div class="flex-between" style="font-weight:bold;font-size:10px;"><span>LAYANAN</span><span>HARGA</span></div>
-      <div class="flex-between" style="font-size:10px;margin-top:8px;"><span style="max-width:60%;">${orderData.service}</span><span>${formatRp(orderData.basePricePlusExpress)}</span></div>
-      ${addonsList.map(a => `<div class="flex-between" style="font-size:10px;margin-top:4px;"><span style="max-width:60%;">+ ${a.name}</span><span>${formatRp(a.price)}</span></div>`).join('')}
-      <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
-      <div class="flex-between" style="font-weight:bold;font-size:14px;"><span>TOTAL</span><span>${formatRp(orderData.totalPrice)}</span></div>
+      <div class="flex-between" style="font-weight:bold;font-size:14px;"><span>TOTAL</span><span>${formatRp(finalTotal)}</span></div>
+      ${paymentStatusHtml}
       <div style="border-bottom:1px dashed #000;margin:8px 0;"></div>
       <div style="text-align:center;font-size:10px;margin-top:8px;">Terima kasih!<br/>Powered by LaundryFlow SaaS</div>
       <script>window.onload=()=>{window.print();setTimeout(()=>window.close(),500);}</script></body></html>`;
     printWindow.document.write(html); printWindow.document.close();
   };
 
-  let activeServiceName = ""; let activeBasePrice = 0; let activeUnit = "Kg"; let activeType = "kg"; let activeCapacity = 1; let activeMinOrder = 1; let activeRoundUp = false;
-  if (selectedServiceId === "custom") { activeServiceName = customServiceName || "Layanan Kustom"; activeBasePrice = Number(customServicePrice) || 0; activeUnit = "Unit"; activeType = "custom"; activeMinOrder = 1; activeRoundUp = false; } else { const s = storeServices.find(s => s.id === selectedServiceId) || storeServices[0]; if (s) { activeServiceName = s.name; activeBasePrice = s.price; activeUnit = s.unit; activeType = s.type; activeCapacity = s.capacity; activeMinOrder = s.minOrder || 1; activeRoundUp = s.roundUp || false; } }
-  
-  const rawInputVal = Number(inputValue) || 0; let processedVal = rawInputVal; let basePrice = 0; let loadBreakdownText = "";
-  if (rawInputVal > 0) {
-    if (activeRoundUp && activeType !== 'pcs') processedVal = Math.ceil(rawInputVal); 
-    let effectiveVal = Math.max(processedVal, activeMinOrder);
-    if (activeType === "load") { const totalLoads = Math.ceil(effectiveVal / activeCapacity); basePrice = totalLoads * activeBasePrice; loadBreakdownText = `${totalLoads} Mesin`; } else { basePrice = effectiveVal * activeBasePrice; let breakdown = `${effectiveVal} ${activeType === 'pcs' ? 'Pcs' : 'Kg'}`; if (effectiveVal > processedVal) breakdown += ` (Dikenakan Min. ${activeMinOrder})`; else if (processedVal > rawInputVal) breakdown += ` (Dibulatkan ke atas)`; loadBreakdownText = breakdown; }
-  }
-  const expressFee = isExpress ? (basePrice * 0.5) : 0;
-  const predefinedAddonsFee = selectedAddons.reduce((total, addonId) => { const addon = storeAddons.find(a => a.id === addonId); return total + (addon ? addon.price : 0); }, 0);
-  const manualAddonsFee = customAddonsList.reduce((total, addon) => total + addon.price, 0);
-  const addonsFee = predefinedAddonsFee + manualAddonsFee;
-  const totalPrice = basePrice + expressFee + addonsFee;
-
-  const handleSaveOrder = async (shouldPrint: boolean) => {
-    if (!customerName) { alert("Masukkan nama pelanggan!"); return; }
-    if (rawInputVal <= 0) { alert("Masukkan jumlah/berat cucian!"); return;}
-    setIsSaving(true);
-    try {
-      const now = new Date(); const formattedDate = now.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const serviceText = `${activeServiceName} [${loadBreakdownText}]`; const invoiceId = `#INV-${Math.floor(1000 + Math.random() * 9000)}`;
-      const newOrderData = { invoiceId, customer: customerName, customerPhone, initials: customerName.charAt(0).toUpperCase(), service: `${serviceText} ${isExpress ? '⚡ Kilat' : ''}`, status: "ANTREAN", dateIn: formattedDate, dateOut: null, totalPrice, basePricePlusExpress: basePrice + expressFee, userEmail: user?.email, createdAt: serverTimestamp() };
-      await addDoc(collection(db, "orders"), newOrderData);
-      let printAddons: any[] = []; selectedAddons.forEach(id => { const addon = storeAddons.find(a => a.id === id); if (addon) printAddons.push(addon); }); printAddons = [...printAddons, ...customAddonsList];
-      if (shouldPrint) printThermalReceipt(newOrderData, printAddons);
-      setIsOrderModalOpen(false); setCustomerName(""); setCustomerPhone(""); setCustomerAddress(""); setInputValue(1); setSelectedAddons([]); setCustomAddonsList([]); setIsExpress(false); setCustomServiceName(""); setCustomServicePrice(""); if(storeServices.length > 0) setSelectedServiceId(storeServices[0].id);
-    } catch (error) { alert("Gagal menyimpan pesanan."); } finally { setIsSaving(false); }
-  };
-
-  const togglePredefinedAddon = (id: string) => setSelectedAddons(prev => prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]);
-  const handleAddManualAddon = () => { if (manualAddonName.trim() === "") return; setCustomAddonsList([...customAddonsList, { id: Date.now().toString(), name: manualAddonName, price: Number(manualAddonPrice) || 0 }]); setManualAddonName(""); setManualAddonPrice(""); setShowManualAddon(false); };
-  const removeManualAddon = (id: string) => setCustomAddonsList(customAddonsList.filter(a => a.id !== id));
-  
+  // --- FUNGSI WARNA BADGE STATUS ---
   const getStatusInfo = (status: string) => {
     switch(status) {
       case "ANTREAN": return { color: "bg-slate-100 text-slate-600 border-slate-200", prog: "bg-slate-300", w: "10%" };
@@ -311,29 +430,29 @@ export default function ClientDashboard() {
   const formatRp = (num: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
   if (loading || !user) return <div className="min-h-screen flex items-center justify-center bg-background-light"><span className="animate-spin material-icons-outlined text-4xl text-indigo-500">autorenew</span></div>;
 
+  // Terapkan Filter Pembayaran dan Pencarian pada Tabel
   const displayedOrders = orders.filter(o => {
     const matchTab = activeTab === "proses" ? o.status !== "SELESAI" : o.status === "SELESAI";
     const q = searchQuery.toLowerCase();
-    const matchSearch = (o.customer && o.customer.toLowerCase().includes(q)) || (o.invoiceId && o.invoiceId.toLowerCase().includes(q)) || (o.customerPhone && o.customerPhone.includes(q));
-    return matchTab && matchSearch;
+    const matchSearch = (o.customer && o.customer.toLowerCase().includes(q)) || (o.invoiceId && o.invoiceId.toLowerCase().includes(q));
+    const matchPayment = paymentFilter === "SEMUA" || o.paymentStatus === paymentFilter;
+    
+    return matchTab && matchSearch && matchPayment;
   });
-
-  const totalPendapatan = orders.reduce((sum, order) => sum + (order.totalPrice || 0), 0);
-  const pesananAktif = orders.filter(o => o.status !== "SELESAI").length;
 
   const handleLogout = async () => { await auth.signOut(); router.push("/login"); };
 
   return (
     <div className="bg-background-light font-display text-slate-800 antialiased flex min-h-screen relative overflow-x-hidden pb-16 lg:pb-0 w-full max-w-[100vw]">
       
-      {/* 🔴 SUBSCRIPTION GUARD */}
-      {storeStatus === "NUNGGAK" && (
+      {/* 🔴 SUBSCRIPTION GUARD (LEVEL 3 - BLOKIR) */}
+      {storeStatus === "BLOKIR" && (
         <div className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-sm flex items-center justify-center p-6 text-center">
-          <div className="bg-white max-w-md w-full rounded-3xl p-8 sm:p-10 shadow-2xl flex flex-col items-center">
+          <div className="bg-white max-w-md w-full rounded-3xl p-8 sm:p-10 shadow-2xl flex flex-col items-center animate-in zoom-in-95 duration-300">
             <div className="w-20 h-20 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6 border border-red-100"><span className="material-icons-outlined text-4xl">block</span></div>
-            <h2 className="text-2xl font-bold text-slate-900 mb-2">Layanan Ditangguhkan</h2>
-            <p className="text-slate-500 mb-8 text-sm leading-relaxed">Masa aktif sistem Kasir Cloud untuk <b>{storeName}</b> telah berakhir. Silakan selesaikan pembayaran untuk kembali menggunakan fitur.</p>
-            <button onClick={() => window.open(`https://wa.me/628123456789?text=Halo Admin LaundryFlow, saya ingin memperpanjang langganan untuk toko ${storeName}`)} className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-red-500/30 transition-all flex justify-center items-center gap-2">
+            <h2 className="text-2xl font-bold text-slate-900 mb-2">Akses Diblokir</h2>
+            <p className="text-slate-500 mb-8 text-sm leading-relaxed">Mohon maaf, sistem Kasir Cloud untuk <b>{storeName}</b> telah ditangguhkan karena keterlambatan pembayaran. Silakan lunasi tagihan Anda.</p>
+            <button onClick={() => window.open(`https://wa.me/628123456789?text=Halo Admin LaundryFlow, saya ingin mengaktifkan kembali langganan untuk toko ${storeName}`)} className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-red-500/30 transition-all flex justify-center items-center gap-2">
               <span className="material-icons-outlined text-[18px]">payment</span> Hubungi Admin
             </button>
             <button onClick={handleLogout} className="mt-4 text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">Keluar Akun</button>
@@ -341,8 +460,21 @@ export default function ClientDashboard() {
         </div>
       )}
 
+      {/* 🟠 SUBSCRIPTION WARNING (LEVEL 2 - TUNGGAKAN) */}
+      {storeStatus === "TUNGGAKAN" && (
+        <div className="absolute top-0 left-0 right-0 z-50 bg-amber-500 text-white shadow-lg flex flex-col sm:flex-row items-center justify-center p-3 gap-2 sm:gap-4 animate-in slide-in-from-top-full duration-500 w-full text-center sm:text-left">
+          <div className="flex items-center gap-2">
+            <span className="material-icons-outlined text-[20px] animate-pulse">warning</span>
+            <p className="text-xs sm:text-sm font-bold tracking-wide">PERINGATAN PEMBAYARAN: Masa langganan SaaS LaundryFlow Anda telah jatuh tempo.</p>
+          </div>
+          <button onClick={() => window.open(`https://wa.me/628123456789?text=Halo Admin LaundryFlow, saya ingin membayar tagihan untuk toko ${storeName}`)} className="text-[10px] sm:text-xs bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full font-bold transition-colors w-max shrink-0">
+            Bayar Sekarang
+          </button>
+        </div>
+      )}
+
       {/* SIDEBAR (Desktop) */}
-      <aside className="w-64 bg-white border-r border-slate-200 hidden lg:flex flex-col sticky top-0 h-screen z-10 shrink-0">
+      <aside className={`w-64 bg-white border-r border-slate-200 hidden lg:flex flex-col sticky top-0 h-screen z-10 shrink-0 ${storeStatus === "TUNGGAKAN" ? "mt-14 h-[calc(100vh-3.5rem)]" : ""}`}>
         <div className="p-6">
           <div className="flex items-center space-x-3">
             {storeLogoUrl ? (
@@ -356,6 +488,8 @@ export default function ClientDashboard() {
         <nav className="mt-2 flex-1 overflow-y-auto">
           <div className="px-6 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Navigasi</div>
           <button onClick={() => setCurrentView("dashboard")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "dashboard" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">dashboard</span><span className="font-semibold text-sm">Dasbor Kasir</span></button>
+          <button onClick={() => setCurrentView("analytics")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "analytics" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">insights</span><span className="font-semibold text-sm">Laporan & Grafik</span></button>
+          
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Marketing</div>
           <button onClick={() => setCurrentView("marketing")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "marketing" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">campaign</span><span className="font-semibold text-sm">Pemasaran WA</span></button>
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Sistem</div>
@@ -368,12 +502,13 @@ export default function ClientDashboard() {
 
       {/* BOTTOM NAV (Mobile) */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 w-full bg-white border-t border-slate-200 flex justify-around items-center z-40 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] pb-safe">
-        <button onClick={() => setCurrentView("dashboard")} className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[22px] mb-1">dashboard</span><span className="text-[10px] font-bold">Kasir</span></button>
-        <button onClick={() => setCurrentView("marketing")} className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${currentView === 'marketing' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[22px] mb-1">campaign</span><span className="text-[10px] font-bold">Promo</span></button>
-        <button onClick={() => setCurrentView("settings")} className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${currentView === 'settings' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[22px] mb-1">tune</span><span className="text-[10px] font-bold">Toko</span></button>
+        <button onClick={() => setCurrentView("dashboard")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">dashboard</span><span className="text-[9px] font-bold">Kasir</span></button>
+        <button onClick={() => setCurrentView("analytics")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'analytics' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">insights</span><span className="text-[9px] font-bold">Laporan</span></button>
+        <button onClick={() => setCurrentView("marketing")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'marketing' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">campaign</span><span className="text-[9px] font-bold">Promo</span></button>
+        <button onClick={() => setCurrentView("settings")} className={`flex flex-col items-center py-3 px-2 flex-1 transition-colors ${currentView === 'settings' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}><span className="material-icons-outlined text-[20px] mb-1">tune</span><span className="text-[9px] font-bold">Toko</span></button>
       </nav>
 
-      <main className="flex-1 flex flex-col min-h-screen w-full min-w-0">
+      <main className={`flex-1 flex flex-col min-h-screen w-full min-w-0 ${storeStatus === "TUNGGAKAN" ? "pt-14" : ""}`}>
         
         {/* HEADER AREA */}
         <header className="flex flex-col md:flex-row md:justify-between md:items-center p-4 sm:p-8 xl:p-10 pb-0 mb-6 sm:mb-8 gap-4 w-full">
@@ -382,8 +517,18 @@ export default function ClientDashboard() {
               {storeLogoUrl ? (<img src={storeLogoUrl} alt="Logo" className="w-10 h-10 rounded-lg object-contain bg-white shadow-sm border border-slate-200" />) : (<div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center shadow-md"><span className="material-icons-outlined text-white text-[20px]">local_laundry_service</span></div>)}
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight leading-tight truncate">{currentView === 'dashboard' ? 'Ringkasan Dasbor' : currentView === 'marketing' ? 'Pemasaran & Broadcast' : 'Pengaturan Toko'}</h1>
-              <p className="text-slate-500 text-xs sm:text-sm mt-0.5 sm:mt-1 truncate">{currentView === 'dashboard' ? 'Sistem Terkoneksi dengan Cloud Database' : currentView === 'marketing' ? 'Kirim info promo massal ke pelanggan Anda' : 'Atur profil bisnis, layanan, dan WhatsApp'}</p>
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight leading-tight truncate">
+                {currentView === 'dashboard' ? 'Dasbor Kasir' : 
+                 currentView === 'analytics' ? 'Laporan & Analitik' :
+                 currentView === 'marketing' ? 'Pemasaran & Broadcast' : 
+                 'Pengaturan Toko'}
+              </h1>
+              <p className="text-slate-500 text-xs sm:text-sm mt-0.5 sm:mt-1 truncate">
+                {currentView === 'dashboard' ? 'Kelola transaksi dan status cucian pelanggan.' : 
+                 currentView === 'analytics' ? 'Pantau performa dan tren penjualan laundry Anda' :
+                 currentView === 'marketing' ? 'Kirim info promo massal ke pelanggan Anda' : 
+                 'Atur profil bisnis, layanan, dan promo'}
+              </p>
             </div>
           </div>
           <div className="flex items-center space-x-4 w-full md:w-auto mt-2 md:mt-0 justify-between md:justify-end shrink-0">
@@ -396,37 +541,91 @@ export default function ClientDashboard() {
           </div>
         </header>
 
-        {/* VIEW 1: DASHBOARD */}
+        {/* VIEW 1: DASHBOARD (DENGAN FILTER BAYAR) */}
         {currentView === "dashboard" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 sm:space-y-8 animate-in fade-in duration-300 min-w-0">
+            
+            {/* KARTU STATISTIK (DITAMBAH PIUTANG & OMZET HARI INI) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 w-full">
-              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0"><div className="p-2 bg-indigo-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-indigo-600">payments</span></div><h3 className="text-slate-500 text-xs sm:text-sm font-medium">Pemasukan Global</h3><p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1 truncate">{formatRp(totalPendapatan)}</p></div>
-              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0"><div className="p-2 bg-indigo-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-indigo-600">local_laundry_service</span></div><h3 className="text-slate-500 text-xs sm:text-sm font-medium">Pesanan Aktif (Belum Selesai)</h3><p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1 truncate">{pesananAktif} <span className="text-sm font-normal text-slate-400">Nota</span></p></div>
-              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm sm:col-span-2 lg:col-span-1 min-w-0"><div className="p-2 bg-indigo-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-indigo-600">check_circle</span></div><h3 className="text-slate-500 text-xs sm:text-sm font-medium">Pesanan Selesai / Diambil</h3><p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1 truncate">{orders.length - pesananAktif} <span className="text-sm font-normal text-slate-400">Nota</span></p></div>
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0">
+                <div className="p-2 bg-emerald-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-emerald-600">today</span></div>
+                <h3 className="text-slate-500 text-xs sm:text-sm font-medium">Omzet Hari Ini (Lunas)</h3>
+                <p className="text-xl sm:text-2xl font-bold text-emerald-600 mt-1 truncate">{formatRp(totalPendapatanHariIni)}</p>
+              </div>
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-red-100 shadow-sm min-w-0 relative overflow-hidden">
+                <div className="absolute -right-4 -top-4 opacity-5"><span className="material-icons-outlined text-9xl text-red-500">warning</span></div>
+                <div className="p-2 bg-red-50 rounded-lg w-max mb-3 sm:mb-4 relative"><span className="material-icons-outlined text-red-500">credit_card_off</span></div>
+                <h3 className="text-red-500 text-xs sm:text-sm font-bold tracking-widest relative">TOTAL PIUTANG</h3>
+                <p className="text-xl sm:text-2xl font-black text-red-600 mt-1 truncate relative">{formatRp(totalPiutang)}</p>
+              </div>
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0">
+                <div className="p-2 bg-indigo-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-indigo-600">account_balance_wallet</span></div>
+                <h3 className="text-slate-500 text-xs sm:text-sm font-medium">Pemasukan Global</h3>
+                <p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1 truncate">{formatRp(totalPendapatanGlobal)}</p>
+              </div>
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0">
+                <div className="p-2 bg-indigo-50 rounded-lg w-max mb-3 sm:mb-4"><span className="material-icons-outlined text-indigo-600">local_laundry_service</span></div>
+                <h3 className="text-slate-500 text-xs sm:text-sm font-medium">Pesanan Aktif</h3>
+                <p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1 truncate">{pesananAktif} <span className="text-sm font-normal text-slate-400">Nota</span></p>
+              </div>
             </div>
 
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col overflow-hidden w-full">
-              <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 bg-white">
+              <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-col xl:flex-row xl:justify-between xl:items-center gap-4 bg-white">
                 <h2 className="font-bold text-lg text-slate-800 shrink-0">Pemantauan Cucian</h2>
-                <div className="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto">
-                  <div className="relative w-full sm:w-72"><span className="material-icons-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">search</span><input type="text" placeholder="Cari nota, nama, no HP..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all placeholder:text-slate-400"/>{searchQuery && <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"><span className="material-icons-outlined text-[16px]">close</span></button>}</div>
-                  <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 w-full sm:w-auto justify-center"><button onClick={() => setActiveTab("proses")} className={`flex-1 sm:flex-none px-4 py-2 sm:py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === "proses" ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Sedang Diproses</button><button onClick={() => setActiveTab("riwayat")} className={`flex-1 sm:flex-none px-4 py-2 sm:py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === "riwayat" ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Riwayat Diambil</button></div>
+                
+                <div className="flex flex-col md:flex-row items-center gap-3 w-full xl:w-auto">
+                  {/* SEARCH */}
+                  <div className="relative w-full md:w-64"><span className="material-icons-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">search</span><input type="text" placeholder="Cari nota, nama..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 transition-all"/></div>
+                  
+                  {/* FILTER PEMBAYARAN */}
+                  <div className="flex bg-slate-100 p-1 rounded-lg w-full md:w-auto overflow-x-auto hide-scrollbar">
+                    <button onClick={()=>setPaymentFilter("SEMUA")} className={`flex-1 md:flex-none px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${paymentFilter === 'SEMUA' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}>Semua</button>
+                    <button onClick={()=>setPaymentFilter("LUNAS")} className={`flex-1 md:flex-none px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${paymentFilter === 'LUNAS' ? 'bg-white shadow-sm text-emerald-600' : 'text-slate-500 hover:text-slate-700'}`}>Lunas</button>
+                    <button onClick={()=>setPaymentFilter("BELUM_LUNAS")} className={`flex-1 md:flex-none px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${paymentFilter === 'BELUM_LUNAS' ? 'bg-white shadow-sm text-red-600' : 'text-slate-500 hover:text-slate-700'}`}>Belum Bayar</button>
+                  </div>
+
+                  {/* FILTER STATUS */}
+                  <div className="flex bg-slate-100 p-1 rounded-lg w-full md:w-auto shrink-0">
+                    <button onClick={() => setActiveTab("proses")} className={`flex-1 md:flex-none px-4 py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === "proses" ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Sedang Diproses</button>
+                    <button onClick={() => setActiveTab("riwayat")} className={`flex-1 md:flex-none px-4 py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === "riwayat" ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Riwayat Selesai</button>
+                  </div>
                 </div>
               </div>
+
               <div className="p-0 overflow-x-auto min-h-[300px] w-full">
-                <table className="w-full text-left whitespace-nowrap min-w-[600px]">
-                  <thead className="bg-slate-50/50"><tr><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-32">No. Nota</th><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-48">Pelanggan</th><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Layanan</th><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-48 text-center">Update Status</th>{activeTab === "proses" ? (<><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-32 hidden sm:table-cell">Progres</th><th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-16 text-center">Batal</th></>) : (<th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-emerald-600 uppercase tracking-wider w-48">Waktu Diambil (Bukti)</th>)}</tr></thead>
+                <table className="w-full text-left whitespace-nowrap min-w-[700px]">
+                  <thead className="bg-slate-50/50">
+                    <tr>
+                      <th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-32">No. Nota</th>
+                      <th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider w-48">Pelanggan</th>
+                      <th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">Layanan</th>
+                      <th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">Status Bayar</th>
+                      <th className="px-4 sm:px-6 py-4 text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">Progres Cucian</th>
+                    </tr>
+                  </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {displayedOrders.length === 0 ? (<tr><td colSpan={activeTab === "proses" ? 6 : 5} className="px-6 py-12 text-center text-slate-400 text-sm">{searchQuery ? `Tidak ada pesanan dengan kata kunci "${searchQuery}"` : "Belum ada data pesanan."}</td></tr>) : (
+                    {displayedOrders.length === 0 ? (<tr><td colSpan={5} className="px-6 py-12 text-center text-slate-400 text-sm">Tidak ada data pesanan.</td></tr>) : (
                       displayedOrders.map((order) => {
                         const statusInfo = getStatusInfo(order.status);
                         return (
                           <tr key={order.firebaseId} className="hover:bg-slate-50 transition-colors group">
                             <td className="px-4 sm:px-6 py-4"><div className="font-bold text-xs sm:text-sm text-slate-800">{order.invoiceId}</div><div className="text-[9px] sm:text-[10px] text-slate-400 mt-0.5">Masuk: {order.dateIn.split(' ')[0]}</div></td>
                             <td className="px-4 sm:px-6 py-4"><div className="flex items-center"><div className="w-8 h-8 bg-indigo-50 rounded-full flex items-center justify-center text-[11px] font-bold text-indigo-600 mr-3 shrink-0 hidden sm:flex">{order.initials}</div><div><span className="text-xs sm:text-sm font-medium text-slate-700 block flex items-center gap-1">{order.customer} {order.customerPhone && <button onClick={() => sendWhatsAppNotification(order)} className="text-emerald-500 hover:text-emerald-600 ml-1"><span className="material-icons-outlined text-[14px]">chat</span></button>}</span><span className="text-[10px] text-indigo-500 font-bold block">{formatRp(order.totalPrice || 0)}</span></div></div></td>
-                            <td className="px-4 sm:px-6 py-4 text-xs sm:text-sm text-slate-500 font-medium truncate max-w-[120px] sm:max-w-none">{order.service}</td>
-                            <td className="px-4 sm:px-6 py-4 text-center"><select value={order.status} onChange={(e) => handleStatusChange(order.firebaseId, order, e.target.value)} className={`w-full sm:w-auto px-2 sm:px-3 py-1.5 text-[10px] sm:text-[11px] font-bold text-center rounded-full border outline-none cursor-pointer appearance-none transition-all shadow-sm ${statusInfo.color}`} style={{ textAlignLast: 'center' }}><option value="ANTREAN">Antrean Baru</option><option value="DICUCI">Sedang Dicuci</option><option value="DIKERINGKAN">Dikeringkan</option><option value="DISETRIKA">Disetrika</option><option value="SIAP AMBIL">Siap Ambil</option><option value="SELESAI">Selesai (Diambil)</option></select></td>
-                            {activeTab === "proses" ? (<><td className="px-4 sm:px-6 py-4 hidden sm:table-cell"><div className="w-24 bg-slate-100 rounded-full h-1.5 overflow-hidden"><div className={`h-1.5 rounded-full transition-all duration-500 ${statusInfo.prog}`} style={{ width: statusInfo.w }}></div></div></td><td className="px-4 sm:px-6 py-4 text-center"><button onClick={() => handleDeleteOrder(order.firebaseId, order.customer)} className="w-8 h-8 rounded-full bg-red-50 text-red-400 hover:bg-red-500 hover:text-white flex items-center justify-center transition-colors mx-auto"><span className="material-icons-outlined text-[16px]">delete</span></button></td></>) : (<td className="px-4 sm:px-6 py-4"><div className="flex items-center gap-1 sm:gap-2 text-emerald-600 bg-emerald-50 px-2 sm:px-3 py-1.5 rounded-lg border border-emerald-100 w-max"><span className="material-icons-outlined text-[14px] sm:text-[16px]">verified</span><span className="text-[10px] sm:text-xs font-bold">{order.dateOut?.split(' ')[0] || '-'}</span></div></td>)}
+                            <td className="px-4 sm:px-6 py-4 text-xs sm:text-sm text-slate-500 font-medium truncate max-w-[150px]"><div className="whitespace-pre-wrap leading-relaxed">{order.service}</div></td>
+                            
+                            {/* KOLOM STATUS BAYAR (DENGAN TOMBOL PELUNASAN) */}
+                            <td className="px-4 sm:px-6 py-4 text-center">
+                              {order.paymentStatus === "LUNAS" ? (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-600 text-[10px] font-black tracking-widest"><span className="material-icons-outlined text-[12px] mr-1">check_circle</span> LUNAS</span>
+                              ) : (
+                                <button onClick={() => markAsPaid(order.firebaseId)} className="inline-flex items-center px-2.5 py-1 rounded-md bg-red-50 border border-red-200 text-red-600 hover:bg-red-500 hover:text-white transition-colors text-[10px] font-black tracking-widest animate-pulse" title="Klik untuk melunasi">BELUM BAYAR 💳</button>
+                              )}
+                            </td>
+
+                            <td className="px-4 sm:px-6 py-4 text-center">
+                              <select value={order.status} onChange={(e) => handleStatusChange(order.firebaseId, order, e.target.value)} className={`w-full sm:w-auto px-2 sm:px-3 py-1.5 text-[10px] sm:text-[11px] font-bold text-center rounded-full border outline-none cursor-pointer appearance-none transition-all shadow-sm ${statusInfo.color}`} style={{ textAlignLast: 'center' }}><option value="ANTREAN">Antrean Baru</option><option value="DICUCI">Sedang Dicuci</option><option value="DIKERINGKAN">Dikeringkan</option><option value="DISETRIKA">Disetrika</option><option value="SIAP AMBIL">Siap Ambil</option><option value="SELESAI">Selesai (Diambil)</option></select>
+                            </td>
                           </tr>
                         );
                       })
@@ -438,14 +637,53 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* VIEW 2: MARKETING */}
+        {/* VIEW 4: ANALYTICS / LAPORAN GRAFIK */}
+        {currentView === "analytics" && (
+          <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full flex flex-col min-h-[450px]">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="font-bold text-lg text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">bar_chart</span> Tren Pemasukan Bersih</h2>
+                  <p className="text-xs text-slate-500">Statistik uang yang sudah LUNAS 7 hari terakhir.</p>
+                </div>
+                <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-xs font-bold">
+                  Minggu Ini
+                </div>
+              </div>
+              
+              <div className="w-full h-[350px]"> 
+                {!hasData ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                    <span className="material-icons-outlined text-4xl mb-2 opacity-50">analytics</span>
+                    <p className="text-sm font-medium">Belum ada transaksi lunas minggu ini.</p>
+                  </div>
+                ) : (
+                  isMounted && (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={revenueData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }} dy={10} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(value) => `${value / 1000}k`} />
+                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} labelStyle={{ color: '#64748b', fontSize: '12px', marginBottom: '8px' }} itemStyle={{ color: '#4f46e5', fontWeight: 'bold', fontSize: '14px' }} formatter={(value: number) => [formatRp(value), "Lunas"]} />
+                        <Bar dataKey="total" radius={[8, 8, 0, 0]} barSize={50}>
+                          {revenueData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.total > 0 ? "#10b981" : "#e2e8f0"} />))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* VIEW 2: MARKETING (KINI SUDAH KEMBALI) */}
         {currentView === "marketing" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 animate-in fade-in duration-300 min-w-0">
             {!fonnteToken && (
                <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3 mb-6 shadow-sm"><span className="material-icons-outlined text-red-500 shrink-0">warning</span><div className="min-w-0"><h4 className="font-bold text-sm">Fitur Terkunci</h4><p className="text-xs mt-0.5 leading-relaxed truncate whitespace-normal">Atur Token API Fonnte di menu <b>Pengaturan Toko</b> untuk mengaktifkan.</p></div></div>
             )}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col lg:flex-row min-h-[650px] w-full">
-              
               <div className="w-full lg:w-1/3 p-4 sm:p-6 border-b lg:border-b-0 lg:border-r border-slate-100 bg-slate-50/50 flex flex-col max-h-[300px] lg:max-h-none min-w-0">
                 <div className="mb-4"><h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-emerald-500">contacts</span> Target Penerima</h3><p className="text-xs text-slate-500 mt-1">Sistem mengambil kontak unik.</p></div>
                 <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-slate-200 mb-3 shadow-sm"><div className="flex items-center gap-2"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.length === uniqueCustomers.length && uniqueCustomers.length > 0} onChange={handleSelectAllMarketing}/> <span className="text-xs font-bold text-slate-700">Pilih Semua</span></div><span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-1 rounded-md">{selectedMarketingCustomers.length} Terpilih</span></div>
@@ -453,7 +691,6 @@ export default function ClientDashboard() {
                   {uniqueCustomers.length === 0 ? (<div className="p-6 text-center text-xs text-slate-400">Belum ada data pelanggan.</div>) : (uniqueCustomers.map((c, idx) => (<label key={idx} className="flex items-center gap-3 p-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.includes(c.phone)} onChange={() => handleToggleMarketingCustomer(c.phone)}/><div className="min-w-0"><p className="text-sm font-bold text-slate-800 truncate">{c.name}</p><p className="text-xs text-slate-500 font-medium truncate">{c.phone}</p></div></label>)))}
                 </div>
               </div>
-
               <div className="flex-1 p-4 sm:p-6 flex flex-col border-b lg:border-b-0 min-w-0">
                 <div className="mb-4"><h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">edit_note</span> Tulis Promo</h3><p className="text-xs text-slate-500 mt-1">Ketik isi pesan broadcast Anda.</p></div>
                 <div className="flex flex-wrap gap-2 mb-3"><button onClick={() => setBroadcastMessage(prev => prev + "[Nama]")} className="text-[11px] sm:text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">+ Sisipkan [Nama]</button><button onClick={() => setBroadcastMessage(prev => prev + "[Toko]")} className="text-[11px] sm:text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">+ Sisipkan [Toko]</button></div>
@@ -464,59 +701,54 @@ export default function ClientDashboard() {
                   <p className="text-center text-[10px] text-slate-400 font-medium">Sistem memberi jeda otomatis.</p>
                 </div>
               </div>
-
               <div className="w-full lg:w-1/3 p-6 border-l border-slate-100 bg-slate-100 flex flex-col items-center justify-center hidden sm:flex"><p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Preview Tampilan</p><div className="w-[280px] h-[500px] bg-white rounded-[2rem] shadow-xl border-4 border-slate-300 overflow-hidden flex flex-col relative relative"><div className="bg-[#075E54] h-14 flex items-center px-4 gap-3 text-white shrink-0"><span className="material-icons-outlined text-white">arrow_back</span><div className="w-8 h-8 bg-slate-300 rounded-full shrink-0 overflow-hidden"><img src="https://ui-avatars.com/api/?name=C&background=random" alt="Avatar"/></div><div className="font-semibold text-sm truncate leading-tight">Bapak Budi <br/><span className="text-[10px] font-normal opacity-80">Online</span></div></div><div className="flex-1 p-3 bg-[#E5DDD5] overflow-y-auto flex flex-col justify-end" style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundSize: 'contain' }}><div className="bg-white text-slate-800 p-2.5 rounded-lg rounded-tr-none shadow-sm max-w-[85%] self-end text-xs leading-relaxed whitespace-pre-wrap relative mb-2">{broadcastMessage.replace(/\[Nama\]/g, "Bapak Budi").replace(/\[Toko\]/g, storeName)}<div className="text-[9px] text-slate-400 text-right mt-1 opacity-80 flex justify-end items-center gap-1">10:45 <span className="material-icons-outlined text-[12px] text-blue-500">done_all</span></div></div></div><div className="bg-slate-100 h-14 shrink-0 flex items-center px-2 gap-2"><div className="flex-1 bg-white h-9 rounded-full flex items-center px-3 text-slate-400"><span className="material-icons-outlined text-sm">emoji_emotions</span> <span className="text-xs ml-2 opacity-60">Ketik pesan...</span></div><div className="w-9 h-9 bg-[#128C7E] rounded-full flex items-center justify-center text-white shrink-0"><span className="material-icons-outlined text-sm">mic</span></div></div></div></div>
             </div>
           </div>
         )}
 
-        {/* VIEW 3: PENGATURAN TOKO */}
+        {/* VIEW 3: PENGATURAN TOKO (DENGAN PROMO) */}
         {currentView === "settings" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
             
+            {/* MANAJEMEN PROMO (BARU) */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 sm:p-8 w-full min-w-0">
+              <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-2 flex items-center gap-2"><span className="material-icons-outlined text-pink-500">local_offer</span> Manajemen Promo & Diskon</h2>
+              <p className="text-xs text-slate-500 mb-6">Buat promo menarik untuk pelanggan Anda. Diskon dapat diterapkan di kasir.</p>
+              
+              <div className="bg-pink-50/50 p-4 rounded-xl border border-pink-100 mb-6 flex flex-col lg:flex-row gap-3 items-end">
+                <div className="w-full lg:w-1/3"><label className="text-[10px] font-bold text-slate-500 uppercase">Nama Promo</label><input value={newPromoName} onChange={e=>setNewPromoName(e.target.value)} type="text" className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none focus:border-pink-400 bg-white" placeholder="Cth: Promo Ramadhan"/></div>
+                <div className="w-full lg:w-1/4"><label className="text-[10px] font-bold text-slate-500 uppercase">Nilai Potongan</label><input value={newPromoValue} onChange={e=>setNewPromoValue(e.target.value)} type="number" className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none focus:border-pink-400 bg-white" placeholder="10"/></div>
+                <div className="w-full lg:w-1/4"><label className="text-[10px] font-bold text-slate-500 uppercase">Tipe Diskon</label><select value={newPromoType} onChange={e=>setNewPromoType(e.target.value)} className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none bg-white focus:border-pink-400"><option value="percent">Persentase (%)</option><option value="fixed">Rupiah (Rp)</option></select></div>
+                <button onClick={handleAddPromo} className="w-full lg:w-auto bg-pink-500 hover:bg-pink-600 text-white font-bold py-2.5 px-6 rounded-lg text-sm transition-colors shadow-sm shrink-0">Buat Promo</button>
+              </div>
+
+              <div className="space-y-2">
+                {storePromos.length === 0 ? <p className="text-xs text-slate-400 italic">Belum ada promo aktif.</p> : storePromos.map(p => (
+                  <div key={p.id} className="flex justify-between items-center p-3 border border-slate-200 rounded-xl hover:bg-slate-50">
+                    <div><span className="font-bold text-slate-800 text-sm">{p.name}</span> <span className="bg-pink-100 text-pink-600 text-[10px] font-bold px-2 py-0.5 rounded-md ml-2">{p.type === 'percent' ? `Diskon ${p.value}%` : `Potongan Rp ${p.value}`}</span></div>
+                    <button onClick={() => handleDeletePromo(p.id)} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"><span className="material-icons-outlined text-[18px]">delete</span></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* PROFIL BISNIS (Sama seperti sebelumnya) */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 sm:p-8 w-full min-w-0">
               <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-6 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">storefront</span> Profil Bisnis & Identitas</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full">
-                
                 <div className="space-y-4 w-full min-w-0 flex flex-col justify-between">
-                  <div className="space-y-2 w-full min-w-0">
-                    <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Nama Laundry</label>
-                    <input value={inputStoreName} onChange={e=>setInputStoreName(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium" placeholder="Misal: Berkah Laundry"/>
-                  </div>
-                  <div className="space-y-2 w-full min-w-0">
-                    <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Nomor HP Toko</label>
-                    <input value={inputStorePhone} onChange={e=>setInputStorePhone(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium" placeholder="0812..."/>
-                  </div>
-                  <div className="space-y-2 w-full min-w-0">
-                    <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Alamat Lengkap Toko</label>
-                    <textarea value={inputStoreAddress} onChange={e=>setInputStoreAddress(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium resize-none" rows={3} placeholder="Jalan..."></textarea>
-                  </div>
+                  <div className="space-y-2 w-full min-w-0"><label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Nama Laundry</label><input value={inputStoreName} onChange={e=>setInputStoreName(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium" placeholder="Misal: Berkah Laundry"/></div>
+                  <div className="space-y-2 w-full min-w-0"><label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Nomor HP Toko</label><input value={inputStorePhone} onChange={e=>setInputStorePhone(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium" placeholder="0812..."/></div>
+                  <div className="space-y-2 w-full min-w-0"><label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Alamat Lengkap Toko</label><textarea value={inputStoreAddress} onChange={e=>setInputStoreAddress(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-400 text-sm font-medium resize-none" rows={3} placeholder="Jalan..."></textarea></div>
                 </div>
-
                 <div className="space-y-2 w-full min-w-0">
                   <label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase">Logo Toko (Muncul di Struk)</label>
-                  <div 
-                    onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current?.click()}
-                    className={`relative w-full h-full min-h-[160px] rounded-2xl border-2 border-dashed flex flex-col items-center justify-center p-4 cursor-pointer transition-all overflow-hidden
-                      ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'}
-                      ${inputStoreLogoUrl ? 'border-transparent bg-white p-0' : ''}`}
-                  >
+                  <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current?.click()} className={`relative w-full h-full min-h-[160px] rounded-2xl border-2 border-dashed flex flex-col items-center justify-center p-4 cursor-pointer transition-all overflow-hidden ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'} ${inputStoreLogoUrl ? 'border-transparent bg-white p-0' : ''}`}>
                     <input type="file" accept="image/png, image/jpeg, image/jpg, image/webp" className="hidden" ref={fileInputRef} onChange={handleFileInputChange} />
-                    {inputStoreLogoUrl ? (
-                      <div className="relative w-full h-full flex items-center justify-center bg-slate-50 group">
-                        <img src={inputStoreLogoUrl} alt="Preview Logo" className="max-h-[160px] object-contain p-2" />
-                        <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white text-xs font-bold flex items-center gap-1"><span className="material-icons-outlined text-sm">edit</span> Ganti Logo</span></div>
-                      </div>
-                    ) : (
-                      <div className="text-center">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 transition-colors ${isDragging ? 'bg-indigo-200 text-indigo-600' : 'bg-slate-200 text-slate-500'}`}><span className="material-icons-outlined">cloud_upload</span></div>
-                        <p className="text-sm font-bold text-slate-700">Tarik & Lepas gambar di sini</p><p className="text-[10px] text-slate-400 mt-1">atau klik untuk mencari file (Max 1MB)</p>
-                      </div>
-                    )}
+                    {inputStoreLogoUrl ? (<div className="relative w-full h-full flex items-center justify-center bg-slate-50 group"><img src={inputStoreLogoUrl} alt="Preview Logo" className="max-h-[160px] object-contain p-2" /><div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white text-xs font-bold flex items-center gap-1"><span className="material-icons-outlined text-sm">edit</span> Ganti Logo</span></div></div>) : (<div className="text-center"><div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 transition-colors ${isDragging ? 'bg-indigo-200 text-indigo-600' : 'bg-slate-200 text-slate-500'}`}><span className="material-icons-outlined">cloud_upload</span></div><p className="text-sm font-bold text-slate-700">Tarik & Lepas gambar di sini</p><p className="text-[10px] text-slate-400 mt-1">atau klik untuk mencari file (Max 1MB)</p></div>)}
                   </div>
                   {inputStoreLogoUrl && (<button onClick={(e) => { e.stopPropagation(); setInputStoreLogoUrl(""); }} className="text-[10px] text-red-500 hover:underline flex items-center gap-1 mt-2"><span className="material-icons-outlined text-[12px]">delete</span> Hapus Logo</button>)}
                 </div>
-
               </div>
               <div className="mt-6 flex justify-end w-full"><button onClick={handleSaveStoreBranding} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-2.5 px-8 rounded-xl text-sm shadow-md transition-all">Simpan Profil Bisnis</button></div>
             </div>
@@ -565,55 +797,129 @@ export default function ClientDashboard() {
         )}
       </main>
 
-      {/* --- MODAL POS KASIR --- */}
+      {/* --- MODAL POS KASIR (VERSI SISTEM KERANJANG & PEMBAYARAN) --- */}
       {isOrderModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm p-0 sm:p-6 w-full h-full">
-          <div className="bg-slate-50 w-full max-w-6xl h-[90vh] sm:h-[95vh] rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-full sm:zoom-in-95 duration-200 min-w-0">
-            <div className="bg-white px-4 sm:px-6 py-4 border-b border-slate-200 flex justify-between items-center shrink-0 w-full"><div className="flex items-center gap-3"><div className="w-8 h-8 sm:w-10 sm:h-10 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center"><span className="material-icons-outlined text-[18px] sm:text-[24px]">point_of_sale</span></div><div><h2 className="text-lg sm:text-xl font-bold text-slate-900 leading-tight">Terminal Kasir</h2><p className="text-[10px] sm:text-xs text-slate-500 font-medium">Sistem Cloud Aktif</p></div></div><button onClick={() => setIsOrderModalOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-full transition-colors"><span className="material-icons-outlined text-[20px]">close</span></button></div>
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 w-full min-w-0">
-              <div className="flex flex-col lg:flex-row gap-4 sm:gap-6 min-h-full w-full">
+        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 w-full h-full">
+          <div className="bg-slate-50 w-full max-w-7xl h-[90vh] sm:h-[95vh] rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-full sm:zoom-in-95 duration-200 min-w-0">
+            {/* Header Modal */}
+            <div className="bg-white px-4 sm:px-6 py-4 border-b border-slate-200 flex justify-between items-center shrink-0 w-full">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 sm:w-10 sm:h-10 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center"><span className="material-icons-outlined text-[18px] sm:text-[24px]">point_of_sale</span></div>
+                <div><h2 className="text-lg sm:text-xl font-bold text-slate-900 leading-tight">Terminal Kasir</h2><p className="text-[10px] sm:text-xs text-slate-500 font-medium">Mode Keranjang (Multi-Item)</p></div>
+              </div>
+              <button onClick={() => setIsOrderModalOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-full transition-colors"><span className="material-icons-outlined text-[20px]">close</span></button>
+            </div>
+            
+            {/* Area Kerja Modal */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 w-full min-w-0">
+              <div className="flex flex-col lg:flex-row gap-4 sm:gap-5 min-h-full w-full">
                 
+                {/* KOLOM 1: DATA PELANGGAN */}
                 <div className="w-full lg:w-1/4 flex flex-col gap-4 min-w-0">
-                  <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-slate-200/60 w-full"><h3 className="font-bold text-slate-800 text-sm tracking-wide mb-3 sm:mb-4">Data Pelanggan</h3><div className="space-y-3 sm:space-y-4 w-full"><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nama Lengkap</label><input value={customerName} onChange={(e)=>setCustomerName(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Masukkan nama..."/></div><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nomor WhatsApp</label><input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/></div><div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Alamat Lengkap</label><textarea value={customerAddress} onChange={(e)=>setCustomerAddress(e.target.value)} className="w-full px-3 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none" rows={2} placeholder="Jalan..."></textarea></div></div></div>
-                </div>
-                
-                <div className="w-full lg:w-5/12 flex flex-col gap-4 min-w-0">
-                  <div className="flex items-center justify-between px-1 w-full"><h3 className="font-bold text-slate-800 text-base sm:text-lg">Menu Layanan</h3><div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm cursor-pointer shrink-0"><button onClick={() => setIsExpress(false)} className={`px-3 sm:px-4 py-1.5 text-[11px] sm:text-xs font-bold rounded-md transition-colors ${!isExpress ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-600'}`}>Reguler</button><button onClick={() => setIsExpress(true)} className={`px-3 sm:px-4 py-1.5 text-[11px] sm:text-xs font-bold rounded-md transition-colors ${isExpress ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-500 hover:text-amber-500'}`}>Kilat</button></div></div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 w-full">
-                    {storeServices.map((s) => (<button key={s.id} onClick={() => setSelectedServiceId(s.id)} className={`relative bg-white p-3 rounded-xl border-2 shadow-sm text-left group transition-all min-w-0 ${selectedServiceId === s.id ? 'border-indigo-600 ring-2 ring-indigo-600/20 bg-indigo-50/30' : 'border-transparent border-slate-200 hover:border-indigo-300'}`}>{selectedServiceId === s.id && <div className="absolute top-2 right-2 text-indigo-600"><span className="material-icons-outlined text-[16px]">check_circle</span></div>}<div className={`w-8 h-8 rounded-md flex items-center justify-center mb-2 transition-transform ${selectedServiceId === s.id ? 'bg-indigo-100' : 'bg-slate-50 group-hover:scale-110'}`}><span className={`material-icons-outlined text-[16px] sm:text-[18px] ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}>{s.icon}</span></div><h4 className="font-bold text-slate-800 text-[11px] sm:text-xs mb-1 line-clamp-2 leading-tight">{s.name}</h4><div className={`font-bold text-[10px] sm:text-[11px] mt-auto pt-1 flex justify-between ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}><span>{formatRp(s.price)}</span><span className="font-normal opacity-70">/{s.unit}</span></div></button>))}
-                    <button onClick={() => setSelectedServiceId("custom")} className={`relative bg-white p-3 rounded-xl border-2 shadow-sm text-left group transition-all min-w-0 ${selectedServiceId === "custom" ? 'border-indigo-600 ring-2 ring-indigo-600/20 bg-indigo-50/30' : 'border-dashed border-slate-300 hover:border-indigo-400'}`}>{selectedServiceId === "custom" && <div className="absolute top-2 right-2 text-indigo-600"><span className="material-icons-outlined text-[16px]">check_circle</span></div>}<div className={`w-8 h-8 rounded-md flex items-center justify-center mb-2 transition-transform ${selectedServiceId === "custom" ? 'bg-indigo-50' : 'bg-slate-100 group-hover:scale-110'}`}><span className={`material-icons-outlined text-[16px] sm:text-[18px] ${selectedServiceId === "custom" ? 'text-indigo-600' : 'text-slate-500'}`}>edit_note</span></div><h4 className="font-bold text-slate-800 text-[11px] sm:text-xs mb-1 truncate">Kustom</h4><p className="text-[9px] sm:text-[10px] text-slate-400 truncate">Kasir isi sendiri</p></button>
-                  </div>
-                  {selectedServiceId === "custom" && (<div className="bg-indigo-50/50 p-3 sm:p-4 rounded-xl border border-indigo-100 flex gap-2 sm:gap-3 animate-in fade-in slide-in-from-top-2 w-full"><div className="flex-1 space-y-1.5 min-w-0"><label className="text-[9px] sm:text-[10px] font-bold text-indigo-800 uppercase">Nama Cucian</label><input value={customServiceName} onChange={e=>setCustomServiceName(e.target.value)} type="text" className="w-full text-xs sm:text-sm py-2 px-3 rounded-md border border-indigo-200 outline-none" placeholder="Misal: Sepatu"/></div><div className="w-1/3 space-y-1.5 shrink-0"><label className="text-[9px] sm:text-[10px] font-bold text-indigo-800 uppercase">Harga Dasar</label><input value={customServicePrice} onChange={e=>setCustomServicePrice(Number(e.target.value) || "")} type="number" className="w-full text-xs sm:text-sm py-2 px-3 rounded-md border border-indigo-200 outline-none" placeholder="Rp 0"/></div></div>)}
-                  <div className="bg-white rounded-xl p-4 sm:p-5 border border-slate-200 shadow-sm mt-auto w-full min-w-0">
-                    <h4 className="font-bold text-xs sm:text-sm mb-2 sm:mb-3 flex items-center gap-2 text-slate-800"><span className="material-icons-outlined text-indigo-500 text-[16px] sm:text-[18px]">list_alt</span> Tambahan Khusus</h4>
-                    <div className="flex flex-wrap gap-2 mb-2 sm:mb-3">{storeAddons.map(addon => <button key={addon.id} onClick={() => togglePredefinedAddon(addon.id)} className={`px-2 sm:px-3 py-1.5 rounded-lg border text-[10px] sm:text-[11px] font-bold transition-all ${selectedAddons.includes(addon.id) ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{addon.name} (+{formatRp(addon.price)})</button>)}{customAddonsList.map(addon => <button key={addon.id} onClick={() => removeManualAddon(addon.id)} className="px-2 sm:px-3 py-1.5 rounded-lg border border-amber-500 bg-amber-50 text-amber-700 text-[10px] sm:text-[11px] font-bold group flex items-center gap-1" title="Hapus">{addon.name} (+{formatRp(addon.price)}) <span className="material-icons-outlined text-[12px] sm:text-[14px] group-hover:text-red-500">close</span></button>)}<button onClick={() => setShowManualAddon(!showManualAddon)} className="px-2 sm:px-3 py-1.5 rounded-lg bg-slate-50 border-dashed border border-slate-300 text-[10px] sm:text-[11px] font-bold text-slate-500">+ Ketik Manual</button></div>
-                    {showManualAddon && (<div className="flex gap-2 p-2 sm:p-3 bg-slate-50 border border-slate-200 rounded-lg animate-in fade-in slide-in-from-top-2 w-full"><input value={manualAddonName} onChange={e=>setManualAddonName(e.target.value)} type="text" placeholder="Catatan" className="flex-1 text-[10px] sm:text-xs px-2 sm:px-3 py-2 border border-slate-200 rounded-md outline-none min-w-0"/><input value={manualAddonPrice} onChange={e=>setManualAddonPrice(Number(e.target.value) || "")} type="number" placeholder="Biaya (0=gratis)" className="w-24 sm:w-32 text-[10px] sm:text-xs px-2 sm:px-3 py-2 border border-slate-200 rounded-md outline-none shrink-0"/><button onClick={handleAddManualAddon} className="bg-indigo-600 text-white px-2 sm:px-3 py-2 rounded-md text-[10px] sm:text-xs font-bold hover:bg-indigo-700 shrink-0">Tambah</button></div>)}
+                  <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-slate-200/60 w-full">
+                    <h3 className="font-bold text-slate-800 text-sm tracking-wide mb-3 sm:mb-4">1. Identitas Pelanggan</h3>
+                    <div className="space-y-3 w-full">
+                      <div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nama Lengkap</label><input value={customerName} onChange={(e)=>setCustomerName(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Masukkan nama..."/></div>
+                      <div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nomor WhatsApp</label><input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/></div>
+                    </div>
                   </div>
                 </div>
                 
+                {/* KOLOM 2: PILIH LAYANAN & KUANTITAS */}
+                <div className="w-full lg:w-5/12 flex flex-col gap-3 min-w-0">
+                  <div className="flex items-center justify-between px-1 w-full"><h3 className="font-bold text-slate-800 text-sm tracking-wide">2. Tambah Layanan</h3></div>
+                  
+                  {/* Grid Katalog */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 w-full">
+                    {storeServices.map((s) => (<button key={s.id} onClick={() => setSelectedServiceId(s.id)} className={`relative bg-white p-2.5 rounded-xl border-2 shadow-sm text-left group transition-all min-w-0 ${selectedServiceId === s.id ? 'border-indigo-600 bg-indigo-50/30' : 'border-transparent border-slate-200'}`}><div className={`w-6 h-6 rounded-md flex items-center justify-center mb-1.5 ${selectedServiceId === s.id ? 'bg-indigo-100' : 'bg-slate-50'}`}><span className={`material-icons-outlined text-[14px] ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}>{s.icon}</span></div><h4 className="font-bold text-slate-800 text-[10px] mb-0.5 line-clamp-1">{s.name}</h4><div className={`font-bold text-[9px] flex justify-between ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}><span>{formatRp(s.price)}</span><span className="font-normal opacity-70">/{s.unit}</span></div></button>))}
+                  </div>
+
+                  {/* Area Kuantitas */}
+                  <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm mt-auto">
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="flex-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase flex justify-between mb-1.5">Kuantitas</label>
+                        <input className="w-full text-2xl font-black bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 focus:ring-2 focus:ring-indigo-500/20 text-indigo-600 outline-none text-center" type="number" value={inputValue} onChange={(e) => setInputValue(parseFloat(e.target.value) || "")} step="0.5" min="0" placeholder="0"/>
+                      </div>
+                    </div>
+
+                    <button onClick={handleAddToCart} className="w-full mt-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 text-sm transition-all active:scale-95">
+                      <span className="material-icons-outlined text-[18px]">add_shopping_cart</span> Masukkan ke Keranjang
+                    </button>
+                  </div>
+                </div>
+                
+                {/* KOLOM 3: KERANJANG BELANJA (CART) & PEMBAYARAN */}
                 <div className="w-full lg:w-1/3 flex flex-col h-auto min-w-0">
                   <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full w-full">
-                    <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50/50"><h3 className="font-bold text-slate-800 text-sm tracking-wide">Kalkulasi Tagihan</h3></div>
-                    <div className="p-4 sm:p-5 flex-1 flex flex-col justify-center"><div className="space-y-2 sm:space-y-3"><label className="text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider flex justify-between"><span>{activeType === 'pcs' ? 'Jumlah (Pcs)' : 'Kuantitas'}</span></label><input className="w-full text-3xl sm:text-4xl font-black bg-slate-50 border border-slate-200 rounded-xl py-3 sm:py-5 px-4 focus:ring-2 focus:ring-indigo-500/20 text-indigo-600 outline-none transition-all text-center tracking-tight" type="number" value={inputValue} onChange={(e) => setInputValue(parseFloat(e.target.value) || "")} step="0.5" min="0" placeholder="0"/></div></div>
-                    <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 mt-auto w-full">
-                      <div className="space-y-2 sm:space-y-2.5 mb-4 sm:mb-5">
-                        <div className="flex justify-between text-sm items-start gap-2"><span className="text-slate-500 font-medium text-[11px] sm:text-xs leading-tight min-w-0 truncate">{activeServiceName} <br/><span className="font-bold text-indigo-500">[{loadBreakdownText}]</span></span><span className="font-semibold text-slate-700 text-xs shrink-0">{formatRp(basePrice)}</span></div>
-                        {isExpress && <div className="flex justify-between text-sm"><span className="text-amber-500 font-bold text-[11px] sm:text-xs">⚡ Layanan Kilat (+50%)</span><span className="font-semibold text-amber-600 text-xs">{formatRp(expressFee)}</span></div>}
-                        {selectedAddons.map(id => { const addon = storeAddons.find(a => a.id === id); return addon ? (<div key={id} className="flex justify-between text-sm gap-2"><span className="text-slate-500 font-medium text-[11px] sm:text-xs truncate">+ {addon.name}</span><span className="font-semibold text-slate-700 text-xs shrink-0">{formatRp(addon.price)}</span></div>) : null; })}
-                        {customAddonsList.map(addon => <div key={addon.id} className="flex justify-between text-sm gap-2"><span className="text-slate-500 font-medium text-[11px] sm:text-xs truncate">+ {addon.name}</span><span className="font-semibold text-slate-700 text-xs shrink-0">{formatRp(addon.price)}</span></div>)}
-                        <div className="flex justify-between items-center pt-2 sm:pt-3 border-t border-slate-200/60 mt-2"><span className="font-bold text-slate-800 text-xs sm:text-sm">Total Tagihan</span><span className="text-xl sm:text-2xl font-black text-indigo-600 tracking-tight">{formatRp(totalPrice)}</span></div>
+                    <div className="p-3 sm:p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                      <h3 className="font-bold text-slate-800 text-sm tracking-wide">3. Keranjang Cucian</h3>
+                      <span className="bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">{cart.length} Item</span>
+                    </div>
+                    
+                    {/* List Item Keranjang */}
+                    <div className="flex-1 overflow-y-auto p-2 bg-slate-50/30 min-h-[100px]">
+                      {cart.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-60 p-6 text-center">
+                          <span className="material-icons-outlined text-4xl mb-2">shopping_basket</span>
+                          <p className="text-xs font-medium">Keranjang masih kosong.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {cart.map((item) => (
+                            <div key={item.id} className="bg-white p-3 rounded-lg border border-slate-100 shadow-sm relative pr-8">
+                               <button onClick={() => handleRemoveFromCart(item.id)} className="absolute top-3 right-2 w-6 h-6 flex items-center justify-center text-red-400 hover:bg-red-50 hover:text-red-600 rounded-md transition-colors"><span className="material-icons-outlined text-[16px]">delete</span></button>
+                               <div className="font-bold text-xs text-slate-800">{item.serviceName}</div>
+                               <div className="text-[10px] text-slate-500 mb-1">{item.qty} {item.unit}</div>
+                               <div className="mt-1 text-right font-bold text-indigo-600 text-xs border-t border-slate-50 pt-1">{formatRp(item.basePrice)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer Keranjang: Promo, Pembayaran & Simpan */}
+                    <div className="p-4 sm:p-5 bg-white border-t border-slate-200 mt-auto w-full">
+                      
+                      {/* Terapkan Promo */}
+                      <div className="mb-4">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Terapkan Promo</label>
+                        <select value={selectedPromoId} onChange={e=>setSelectedPromoId(e.target.value)} className="w-full text-xs font-bold text-indigo-600 border border-indigo-200 p-2 rounded-lg bg-indigo-50 outline-none">
+                          <option value="">-- Tidak Ada Promo --</option>
+                          {storePromos.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
                       </div>
-                      <div className="flex gap-2 sm:gap-3 w-full">
-                        <button disabled={isSaving} onClick={() => handleSaveOrder(false)} className="flex-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 hover:text-indigo-600 font-bold py-3 sm:py-3.5 rounded-xl flex items-center justify-center gap-1 sm:gap-2 transition-all active:scale-[0.98] disabled:opacity-50 text-xs sm:text-sm min-w-0 truncate px-2">
-                          {isSaving ? <span className="animate-spin material-icons-outlined text-[16px] sm:text-[18px]">autorenew</span> : "Simpan Saja"}
+
+                      {/* Status Pembayaran Lunas / Hutang */}
+                      <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200 mb-4">
+                        <span className="text-[11px] font-bold text-slate-600">Pembayaran</span>
+                        <div className="flex bg-slate-200 p-1 rounded-md">
+                          <button onClick={()=>setIsPaidNow(true)} className={`px-3 py-1 text-[10px] font-bold rounded ${isPaidNow ? 'bg-emerald-500 text-white shadow' : 'text-slate-500'}`}>LUNAS</button>
+                          <button onClick={()=>setIsPaidNow(false)} className={`px-3 py-1 text-[10px] font-bold rounded ${!isPaidNow ? 'bg-red-500 text-white shadow' : 'text-slate-500'}`}>BELUM (NANTI)</button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 mb-4">
+                        <div className="flex justify-between text-[11px] text-slate-500 font-medium"><span>Subtotal</span><span>{formatRp(totalKotor)}</span></div>
+                        {discountTotal > 0 && <div className="flex justify-between text-[11px] text-pink-500 font-bold"><span>Diskon Promo</span><span>-{formatRp(discountTotal)}</span></div>}
+                        <div className="flex justify-between items-end border-t border-slate-100 pt-2 mt-2">
+                          <span className="font-bold text-slate-800 text-xs">TOTAL AKHIR</span>
+                          <span className="text-xl font-black text-indigo-600 tracking-tight">{formatRp(grandTotal)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 w-full">
+                        <button disabled={isSaving || cart.length === 0} onClick={() => handleSaveOrder(false)} className="flex-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold py-3 rounded-xl flex items-center justify-center gap-1 transition-all disabled:opacity-50 text-[11px]">
+                          {isSaving ? "Tunggu..." : "Simpan Saja"}
                         </button>
-                        <button disabled={isSaving} onClick={() => handleSaveOrder(true)} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-3.5 rounded-xl flex items-center justify-center gap-1 sm:gap-2 shadow-lg shadow-indigo-500/25 transition-all active:scale-[0.98] disabled:opacity-50 text-xs sm:text-sm min-w-0 truncate px-2">
-                          {isSaving ? <span className="animate-spin material-icons-outlined text-[16px] sm:text-[18px]">autorenew</span> : <><span className="material-icons-outlined text-[16px] sm:text-[18px]">print</span> Simpan & Cetak</>}
+                        <button disabled={isSaving || cart.length === 0} onClick={() => handleSaveOrder(true)} className="flex-[2] bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-1 shadow-lg disabled:opacity-50 text-xs">
+                          {isSaving ? "Menyimpan..." : <><span className="material-icons-outlined text-[16px]">print</span> Cetak & Simpan</>}
                         </button>
                       </div>
                     </div>
                   </div>
                 </div>
+
               </div>
             </div>
           </div>
