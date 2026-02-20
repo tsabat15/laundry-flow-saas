@@ -512,7 +512,6 @@ export default function ClientDashboard() {
           
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Marketing</div>
           <button onClick={() => setCurrentView("marketing")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "marketing" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">campaign</span><span className="font-semibold text-sm">Pemasaran WA</span></button>
-          
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Sistem</div>
           <button onClick={() => setCurrentView("settings")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "settings" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">tune</span><span className="font-semibold text-sm">Pengaturan Toko</span></button>
         </nav>
@@ -685,7 +684,8 @@ export default function ClientDashboard() {
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                         <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }} dy={10} />
                         <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(value) => `${value / 1000}k`} />
-                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} labelStyle={{ color: '#64748b', fontSize: '12px', marginBottom: '8px' }} itemStyle={{ color: '#4f46e5', fontWeight: 'bold', fontSize: '14px' }} formatter={(value: number) => [formatRp(value), "Lunas"]} />
+                        {/* ✅ FIX TYPE ERROR DI SINI */}
+                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} labelStyle={{ color: '#64748b', fontSize: '12px', marginBottom: '8px' }} itemStyle={{ color: '#4f46e5', fontWeight: 'bold', fontSize: '14px' }} formatter={(value: any) => [formatRp(Number(value) || 0), "Lunas"]} />
                         <Bar dataKey="total" radius={[8, 8, 0, 0]} barSize={50}>
                           {revenueData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.total > 0 ? "#10b981" : "#e2e8f0"} />))}
                         </Bar>
@@ -739,7 +739,7 @@ export default function ClientDashboard() {
         {currentView === "settings" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
             
-            {/* MANAJEMEN PROMO (BARU) */}
+            {/* MANAJEMEN PROMO */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 sm:p-8 w-full min-w-0">
               <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-2 flex items-center gap-2"><span className="material-icons-outlined text-pink-500">local_offer</span> Manajemen Promo & Diskon</h2>
               <p className="text-xs text-slate-500 mb-6">Buat promo menarik untuk pelanggan Anda. Diskon dapat diterapkan di kasir.</p>
@@ -761,7 +761,7 @@ export default function ClientDashboard() {
               </div>
             </div>
 
-            {/* PROFIL BISNIS (Sama seperti sebelumnya) */}
+            {/* PROFIL BISNIS */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 sm:p-8 w-full min-w-0">
               <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-6 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">storefront</span> Profil Bisnis & Identitas</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full">
