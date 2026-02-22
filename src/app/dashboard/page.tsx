@@ -190,7 +190,9 @@ export default function ClientDashboard() {
     customerStats[key].totalSpent += (o.totalPrice || 0);
     customerStats[key].orderCount += 1;
   });
-  const topCustomers = Object.values(customerStats).sort((a: any, b: any) => b.totalSpent - a.totalSpent).slice(0, 5);
+  
+  // 🔥 PERBAIKAN: Diurutkan murni berdasarkan jumlah nota (orderCount)
+  const topCustomers = Object.values(customerStats).sort((a: any, b: any) => b.orderCount - a.orderCount).slice(0, 5);
 
   const areaStats: Record<string, any> = {};
   orders.forEach(o => {
@@ -361,34 +363,46 @@ export default function ClientDashboard() {
     let activeBasePrice = 0; 
     let activeUnit = "Kg"; 
     
-    const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0]; 
-    if (s) { 
-      activeServiceName = s.name; 
-      activeUnit = s.unit;
-      let qty = Number(inputValue) || 0;
-      if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
+    // 💡 LOGIKA HARGA CUSTOM / MANUAL
+    if (selectedServiceId === "custom") { 
+      activeServiceName = customServiceName || "Harga Kasihan/Manual"; 
+      activeBasePrice = Number(customServicePrice) || 0; 
+      activeUnit = "Item"; 
+    } else { 
+      const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0]; 
+      if (s) { 
+        activeServiceName = s.name; 
+        activeUnit = s.unit;
+        let qty = Number(inputValue) || 0;
+        if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
 
-      if (s.type === "load") { 
-        activeBasePrice = Math.ceil(qty / s.capacity) * s.price; 
-      } else { 
-        let effectiveVal = Math.max(qty, s.minOrder || 1);
-        activeBasePrice = effectiveVal * s.price; 
-      }
-    } 
+        if (s.type === "load") { 
+          activeBasePrice = Math.ceil(qty / s.capacity) * s.price; 
+        } else { 
+          let effectiveVal = Math.max(qty, s.minOrder || 1);
+          activeBasePrice = effectiveVal * s.price; 
+        }
+      } 
+    }
 
-    if (activeBasePrice === 0) return;
+    if (activeBasePrice === 0 && selectedServiceId !== "custom") return;
 
     setCart([...cart, { 
       id: Date.now().toString(), 
       serviceId: selectedServiceId,
       serviceName: activeServiceName, 
-      qty: Number(inputValue) || 1, 
+      qty: selectedServiceId === "custom" ? 1 : (Number(inputValue) || 1), 
       unit: activeUnit,
       basePrice: activeBasePrice,
       totalPrice: activeBasePrice 
     }]);
     
+    // Reset Form
     setInputValue(1);
+    if(selectedServiceId === "custom") {
+      setCustomServiceName("");
+      setCustomServicePrice("");
+    }
   };
 
   const handleRemoveFromCart = (idToRemove: string) => {
@@ -418,7 +432,6 @@ export default function ClientDashboard() {
   // 2. Tambahkan Potongan Manual (Harga Kasihan)
   let manualDiscountVal = Number(customDiscount) || 0;
   
-  // 🔥 FIX: Variabel ini yang sebelumnya bernama discountTotal, sekarang diperbaiki
   let totalDiscount = promoDiscountTotal + manualDiscountVal;
   const grandTotal = Math.max(0, totalKotor - totalDiscount);
 
@@ -446,7 +459,7 @@ export default function ClientDashboard() {
         dateIn: formattedDate, 
         dateOut: null, 
         totalPrice: grandTotal,
-        discountGiven: totalDiscount, // Gabungan diskon promo & manual
+        discountGiven: totalDiscount, 
         cartDetails: cart, 
         userEmail: user?.email, 
         createdAt: serverTimestamp() 
@@ -764,7 +777,7 @@ export default function ClientDashboard() {
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full min-w-0">
                 <div className="mb-4">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-amber-500">emoji_events</span> Top 5 Pelanggan Loyal</h3>
-                  <p className="text-[10px] sm:text-xs text-slate-500">Berdasarkan total rupiah transaksi lunas.</p>
+                  <p className="text-[10px] sm:text-xs text-slate-500">Berdasarkan jumlah transaksi (nota) lunas terbanyak.</p>
                 </div>
                 <div className="space-y-3">
                   {topCustomers.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">Belum ada data pelanggan.</p> : topCustomers.map((c, i) => (
@@ -1002,7 +1015,6 @@ export default function ClientDashboard() {
                             {filteredCustomers.map((c, i) => (
                               <div 
                                 key={i} 
-                                // 🔥 KUNCI PERBAIKAN: Gunakan onMouseDown dan preventDefault agar onBlur input tidak jalan duluan
                                 onMouseDown={(e) => {
                                   e.preventDefault(); 
                                   handleSelectSuggestedCustomer(c.name, c.phone, c.area);
@@ -1027,7 +1039,7 @@ export default function ClientDashboard() {
                         <input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/>
                       </div>
 
-                      {/* 📍 INPUT DAERAH / KECAMATAN */}
+                      {/* 📍 INPUT BARU: DAERAH / KECAMATAN */}
                       <div className="space-y-1.5 w-full">
                         <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1"><span className="material-icons-outlined text-[12px]">place</span> Daerah / Kecamatan</label>
                         <input value={customerArea} onChange={(e)=>setCustomerArea(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Contoh: Tembung, Pancing..."/>
