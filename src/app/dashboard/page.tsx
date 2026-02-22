@@ -4,7 +4,8 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { auth, db } from "../../lib/firebase"; 
 import { useRouter } from "next/navigation";
-import { collection, addDoc, updateDoc, doc, deleteDoc, setDoc, onSnapshot, query, where, orderBy, serverTimestamp } from "firebase/firestore";
+// 🔥 PENAMBAHAN 'limit' DI SINI
+import { collection, addDoc, updateDoc, doc, deleteDoc, setDoc, onSnapshot, query, where, orderBy, limit, serverTimestamp } from "firebase/firestore";
 // IMPORT LIBRARY GRAFIK
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -31,7 +32,7 @@ export default function ClientDashboard() {
 
   const [orders, setOrders] = useState<any[]>([]);
   const [storeServices, setStoreServices] = useState<any[]>([]);
-  const [storePromos, setStorePromos] = useState<any[]>([]); // 🏷️ State Promo
+  const [storePromos, setStorePromos] = useState<any[]>([]); 
   
   const [storeName, setStoreName] = useState("LaundryFlow");
   const [storeAddress, setStoreAddress] = useState("");
@@ -52,6 +53,8 @@ export default function ClientDashboard() {
   // --- STATE MODAL KASIR ---
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [customerArea, setCustomerArea] = useState(""); 
+  const [showSuggestions, setShowSuggestions] = useState(false); 
   
   const [selectedServiceId, setSelectedServiceId] = useState("");
   const [customServiceName, setCustomServiceName] = useState("");
@@ -63,7 +66,7 @@ export default function ClientDashboard() {
   
   // --- STATE KASIR (PEMBAYARAN & PROMO) ---
   const [selectedPromoId, setSelectedPromoId] = useState("");
-  const [isPaidNow, setIsPaidNow] = useState(true); // Default: Langsung Bayar Lunas
+  const [isPaidNow, setIsPaidNow] = useState(true); 
 
   // --- STATE PENGATURAN LAYANAN & PROMO---
   const [newSvcName, setNewSvcName] = useState("");
@@ -75,7 +78,8 @@ export default function ClientDashboard() {
 
   const [newPromoName, setNewPromoName] = useState("");
   const [newPromoValue, setNewPromoValue] = useState("");
-  const [newPromoType, setNewPromoType] = useState("percent"); // percent atau fixed
+  const [newPromoType, setNewPromoType] = useState("percent"); 
+  const [newPromoTargetServices, setNewPromoTargetServices] = useState<string[]>([]); 
 
   // --- STATE MARKETING ---
   const [broadcastMessage, setBroadcastMessage] = useState("Halo Kak [Nama],\n\nKami ada promo spesial nih dari toko kami! Diskon 20% untuk cuci bedcover minggu ini.\n\nDitunggu kedatangannya ya!\n\n*Balas STOP untuk berhenti menerima info promo.");
@@ -96,7 +100,14 @@ export default function ClientDashboard() {
     if (!user?.email) return;
     const userEmail = user.email as string;
 
-    const qOrders = query(collection(db, "orders"), where("userEmail", "==", userEmail), orderBy("createdAt", "desc"));
+    // 🔥 KUNCI PERCEPATAN: Tambahkan limit(100)
+    const qOrders = query(
+      collection(db, "orders"), 
+      where("userEmail", "==", userEmail), 
+      orderBy("createdAt", "desc"),
+      limit(100) // 👈 Mengambil maksimal 100 nota terbaru
+    );
+
     const unsubOrders = onSnapshot(qOrders, (snapshot) => {
       setOrders(snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() })));
     });
@@ -116,12 +127,15 @@ export default function ClientDashboard() {
         setInputStorePhone(data.storePhone || "");
         setStoreLogoUrl(data.storeLogoUrl || "");
         setInputStoreLogoUrl(data.storeLogoUrl || "");
-        setStoreStatus(data.status || "AKTIF");
+        
+        // 🔐 PENTING: Jika status kosong, anggap PENDING
+        setStoreStatus(data.status || "PENDING");
 
         if(data.services && data.services.length > 0 && !selectedServiceId) setSelectedServiceId(data.services[0].id);
       } else {
+        // 🔐 PENTING: User baru langsung di-set PENDING (Bukan AKTIF)
         setDoc(doc(db, "storeSettings", userEmail), { 
-          services: DEFAULT_SERVICES, storeName: "Laundry Baru", status: "AKTIF"
+          services: DEFAULT_SERVICES, storeName: "Laundry Baru", status: "PENDING"
         }, { merge: true });
       }
     });
@@ -170,13 +184,64 @@ export default function ClientDashboard() {
   const revenueData = getRevenueData();
   const hasData = revenueData.some(d => d.total > 0);
 
-  // --- FUNGSI PROMO ---
+  // --- 🏆 LOGIKA LEADERBOARD CRM (TOP PELANGGAN & DAERAH) ---
+  const customerStats: Record<string, any> = {};
+  orders.filter(o => o.paymentStatus === "LUNAS").forEach(o => {
+    const key = (o.customer || "").toLowerCase();
+    if(!key) return;
+    if(!customerStats[key]) customerStats[key] = { name: o.customer, phone: o.customerPhone, totalSpent: 0, orderCount: 0 };
+    customerStats[key].totalSpent += (o.totalPrice || 0);
+    customerStats[key].orderCount += 1;
+  });
+  const topCustomers = Object.values(customerStats).sort((a: any, b: any) => b.totalSpent - a.totalSpent).slice(0, 5);
+
+  const areaStats: Record<string, any> = {};
+  orders.forEach(o => {
+    const key = (o.customerArea || "").toLowerCase().trim();
+    if(!key) return;
+    if(!areaStats[key]) areaStats[key] = { area: o.customerArea, count: 0 };
+    areaStats[key].count += 1;
+  });
+  const topAreas = Object.values(areaStats).sort((a: any, b: any) => b.count - a.count).slice(0, 5);
+
+  // --- FUNGSI AUTO-COMPLETE PELANGGAN (SMART TRACKING) ---
+  const allPastCustomers = Array.from(new Map(
+    orders
+      .filter(o => o.customer) 
+      .map(o => [o.customer.toLowerCase(), { name: o.customer, phone: o.customerPhone || "", area: o.customerArea || "" }]) 
+  ).values());
+
+  const filteredCustomers = customerName 
+    ? allPastCustomers.filter(c => c.name.toLowerCase().includes(customerName.toLowerCase())).slice(0, 5)
+    : allPastCustomers.slice(0, 5); 
+
+  const handleSelectSuggestedCustomer = (name: string, phone: string, area: string) => {
+    setCustomerName(name);
+    setCustomerPhone(phone);
+    setCustomerArea(area); 
+    setShowSuggestions(false);
+  };
+
+  // --- FUNGSI PROMO DINAMIS SPESIFIK ---
+  const handleTogglePromoTarget = (svcId: string) => {
+    setNewPromoTargetServices(prev => prev.includes(svcId) ? prev.filter(id => id !== svcId) : [...prev, svcId]);
+  };
+
   const handleAddPromo = async () => {
-    if (!newPromoName || !newPromoValue) return;
-    const promoObj = { id: "prm_" + Date.now(), name: newPromoName, value: Number(newPromoValue), type: newPromoType };
+    if (!newPromoName || !newPromoValue) { alert("Nama dan nilai promo wajib diisi!"); return; }
+    if (newPromoTargetServices.length === 0) { alert("Pilih minimal 1 pelayanan yang berhak mendapat promo ini!"); return; }
+
+    const promoObj = { 
+      id: "prm_" + Date.now(), 
+      name: newPromoName, 
+      value: Number(newPromoValue), 
+      type: newPromoType,
+      targetServices: newPromoTargetServices 
+    };
     const updatedPromos = [...storePromos, promoObj];
     await setDoc(doc(db, "storeSettings", user?.email as string), { promos: updatedPromos }, { merge: true });
-    setNewPromoName(""); setNewPromoValue("");
+    
+    setNewPromoName(""); setNewPromoValue(""); setNewPromoTargetServices([]);
   };
 
   const handleDeletePromo = async (id: string) => {
@@ -342,17 +407,23 @@ export default function ClientDashboard() {
     setCart(cart.filter(item => item.id !== idToRemove));
   };
 
-  // Kalkulasi Diskon Global
+  // 🧠 KALKULASI DISKON CERDAS
   let totalKotor = cart.reduce((s, i) => s + i.basePrice, 0);
   let discountTotal = 0;
   const activePromo = storePromos.find(p => p.id === selectedPromoId);
   
-  if (activePromo) {
-    if (activePromo.type === "percent") {
-      discountTotal = (totalKotor * activePromo.value) / 100;
-    } else {
-      discountTotal = activePromo.value; 
-    }
+  if (activePromo && activePromo.targetServices) {
+    cart.forEach(item => {
+      if (activePromo.targetServices.includes(item.serviceId)) {
+        if (activePromo.type === "percent") {
+          discountTotal += (item.basePrice * activePromo.value) / 100;
+        } else {
+          const svc = storeServices.find(s => s.id === item.serviceId);
+          const multiplier = (svc && svc.price > 0) ? (item.basePrice / svc.price) : 1;
+          discountTotal += (activePromo.value * multiplier); 
+        }
+      }
+    });
   }
   
   const grandTotal = Math.max(0, totalKotor - discountTotal);
@@ -373,6 +444,7 @@ export default function ClientDashboard() {
         invoiceId, 
         customer: customerName, 
         customerPhone, 
+        customerArea, 
         initials: (customerName || "U").charAt(0).toUpperCase(), 
         service: combinedServicesText, 
         status: "ANTREAN", 
@@ -392,7 +464,8 @@ export default function ClientDashboard() {
       
       // Reset Modal & Keranjang
       setIsOrderModalOpen(false); 
-      setCustomerName(""); setCustomerPhone(""); 
+      setCustomerName(""); setCustomerPhone(""); setCustomerArea(""); 
+      setShowSuggestions(false); 
       setCart([]); setInputValue(1); setSelectedPromoId(""); setIsPaidNow(true);
       if(storeServices.length > 0) setSelectedServiceId(storeServices[0].id);
     } catch (error) { 
@@ -450,7 +523,6 @@ export default function ClientDashboard() {
   const formatRp = (num: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
   if (loading || !user) return <div className="min-h-screen flex items-center justify-center bg-background-light"><span className="animate-spin material-icons-outlined text-4xl text-indigo-500">autorenew</span></div>;
 
-  // Terapkan Filter Pembayaran dan Pencarian pada Tabel
   const displayedOrders = orders.filter(o => {
     const matchTab = activeTab === "proses" ? o.status !== "SELESAI" : o.status === "SELESAI";
     const q = searchQuery.toLowerCase();
@@ -465,6 +537,21 @@ export default function ClientDashboard() {
   return (
     <div className="bg-background-light font-display text-slate-800 antialiased flex min-h-screen relative overflow-x-hidden pb-16 lg:pb-0 w-full max-w-[100vw]">
       
+      {/* 🟡 ACTIVATION GUARD (LEVEL 1 - PENDING) */}
+      {storeStatus === "PENDING" && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/95 backdrop-blur-sm flex items-center justify-center p-6 text-center">
+          <div className="bg-white max-w-md w-full rounded-3xl p-8 sm:p-10 shadow-2xl flex flex-col items-center animate-in zoom-in-95 duration-300">
+            <div className="w-20 h-20 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mb-6 border border-amber-100"><span className="material-icons-outlined text-4xl">hourglass_empty</span></div>
+            <h2 className="text-2xl font-bold text-slate-900 mb-2">Menunggu Aktivasi</h2>
+            <p className="text-slate-500 mb-8 text-sm leading-relaxed">Terima kasih telah mendaftar di LaundryFlow! Akun Anda sedang dalam antrean verifikasi. Silakan hubungi Admin untuk mengaktifkan lisensi Anda.</p>
+            <button onClick={() => window.open(`https://wa.me/62895628925599?text=Halo Admin LaundryFlow, saya pengguna baru dengan email ${user?.email}. Mohon aktivasi akun saya.`)} className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-amber-500/30 transition-all flex justify-center items-center gap-2">
+              <span className="material-icons-outlined text-[18px]">support_agent</span> Hubungi Admin
+            </button>
+            <button onClick={handleLogout} className="mt-4 text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">Keluar Akun</button>
+          </div>
+        </div>
+      )}
+
       {/* 🔴 SUBSCRIPTION GUARD (LEVEL 3 - BLOKIR) */}
       {storeStatus === "BLOKIR" && (
         <div className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-sm flex items-center justify-center p-6 text-center">
@@ -472,7 +559,7 @@ export default function ClientDashboard() {
             <div className="w-20 h-20 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6 border border-red-100"><span className="material-icons-outlined text-4xl">block</span></div>
             <h2 className="text-2xl font-bold text-slate-900 mb-2">Akses Diblokir</h2>
             <p className="text-slate-500 mb-8 text-sm leading-relaxed">Mohon maaf, sistem Kasir Cloud untuk <b>{storeName}</b> telah ditangguhkan karena keterlambatan pembayaran. Silakan lunasi tagihan Anda.</p>
-            <button onClick={() => window.open(`https://wa.me/628123456789?text=Halo Admin LaundryFlow, saya ingin mengaktifkan kembali langganan untuk toko ${storeName}`)} className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-red-500/30 transition-all flex justify-center items-center gap-2">
+            <button onClick={() => window.open(`https://wa.me/62895628925599?text=Halo Admin LaundryFlow, saya ingin mengaktifkan kembali langganan untuk toko ${storeName}`)} className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-red-500/30 transition-all flex justify-center items-center gap-2">
               <span className="material-icons-outlined text-[18px]">payment</span> Hubungi Admin
             </button>
             <button onClick={handleLogout} className="mt-4 text-xs font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest">Keluar Akun</button>
@@ -487,7 +574,7 @@ export default function ClientDashboard() {
             <span className="material-icons-outlined text-[20px] animate-pulse">warning</span>
             <p className="text-xs sm:text-sm font-bold tracking-wide">PERINGATAN PEMBAYARAN: Masa langganan SaaS LaundryFlow Anda telah jatuh tempo.</p>
           </div>
-          <button onClick={() => window.open(`https://wa.me/628123456789?text=Halo Admin LaundryFlow, saya ingin membayar tagihan untuk toko ${storeName}`)} className="text-[10px] sm:text-xs bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full font-bold transition-colors w-max shrink-0">
+          <button onClick={() => window.open(`https://wa.me/62895628925599?text=Halo Admin LaundryFlow, saya ingin membayar tagihan untuk toko ${storeName}`)} className="text-[10px] sm:text-xs bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full font-bold transition-colors w-max shrink-0">
             Bayar Sekarang
           </button>
         </div>
@@ -508,10 +595,11 @@ export default function ClientDashboard() {
         <nav className="mt-2 flex-1 overflow-y-auto">
           <div className="px-6 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Navigasi</div>
           <button onClick={() => setCurrentView("dashboard")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "dashboard" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">dashboard</span><span className="font-semibold text-sm">Dasbor Kasir</span></button>
-          <button onClick={() => setCurrentView("analytics")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "analytics" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">insights</span><span className="font-semibold text-sm">Laporan & Grafik</span></button>
+          <button onClick={() => setCurrentView("analytics")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "analytics" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">insights</span><span className="font-semibold text-sm">Laporan & CRM</span></button>
           
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Marketing</div>
           <button onClick={() => setCurrentView("marketing")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "marketing" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">campaign</span><span className="font-semibold text-sm">Pemasaran WA</span></button>
+          
           <div className="px-6 py-3 mt-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Sistem</div>
           <button onClick={() => setCurrentView("settings")} className={`w-full flex items-center px-6 py-3.5 transition-colors ${currentView === "settings" ? 'bg-indigo-50/60 text-indigo-600 border-r-4 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}`}><span className="material-icons-outlined mr-3 text-[20px]">tune</span><span className="font-semibold text-sm">Pengaturan Toko</span></button>
         </nav>
@@ -539,13 +627,13 @@ export default function ClientDashboard() {
             <div className="min-w-0 flex-1">
               <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight leading-tight truncate">
                 {currentView === 'dashboard' ? 'Dasbor Kasir' : 
-                 currentView === 'analytics' ? 'Laporan & Analitik' :
+                 currentView === 'analytics' ? 'Laporan & CRM' :
                  currentView === 'marketing' ? 'Pemasaran & Broadcast' : 
                  'Pengaturan Toko'}
               </h1>
               <p className="text-slate-500 text-xs sm:text-sm mt-0.5 sm:mt-1 truncate">
                 {currentView === 'dashboard' ? 'Kelola transaksi dan status cucian pelanggan.' : 
-                 currentView === 'analytics' ? 'Pantau performa dan tren penjualan laundry Anda' :
+                 currentView === 'analytics' ? 'Pantau omzet dan loyalitas pelanggan' :
                  currentView === 'marketing' ? 'Kirim info promo massal ke pelanggan Anda' : 
                  'Atur profil bisnis, layanan, dan promo'}
               </p>
@@ -657,48 +745,73 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* VIEW 4: ANALYTICS / LAPORAN GRAFIK */}
+        {/* 🏆 VIEW 4: ANALYTICS & CRM */}
         {currentView === "analytics" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full flex flex-col min-h-[450px]">
+            
+            {/* GRAFIK OMZET */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full flex flex-col h-[400px]">
               <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h2 className="font-bold text-lg text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">bar_chart</span> Tren Pemasukan Bersih</h2>
-                  <p className="text-xs text-slate-500">Statistik uang yang sudah LUNAS 7 hari terakhir.</p>
-                </div>
-                <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-xs font-bold">
-                  Minggu Ini
-                </div>
+                <div><h2 className="font-bold text-lg text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-indigo-500">bar_chart</span> Tren Pemasukan Bersih</h2><p className="text-xs text-slate-500">Statistik uang yang sudah LUNAS 7 hari terakhir.</p></div>
+                <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-xs font-bold">Minggu Ini</div>
               </div>
-              
-              <div className="w-full h-[350px]"> 
-                {!hasData ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
-                    <span className="material-icons-outlined text-4xl mb-2 opacity-50">analytics</span>
-                    <p className="text-sm font-medium">Belum ada transaksi lunas minggu ini.</p>
-                  </div>
-                ) : (
-                  isMounted && (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={revenueData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }} dy={10} />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(value) => `${value / 1000}k`} />
-                        {/* ✅ FIX TYPE ERROR DI SINI */}
-                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} labelStyle={{ color: '#64748b', fontSize: '12px', marginBottom: '8px' }} itemStyle={{ color: '#4f46e5', fontWeight: 'bold', fontSize: '14px' }} formatter={(value: any) => [formatRp(Number(value) || 0), "Lunas"]} />
-                        <Bar dataKey="total" radius={[8, 8, 0, 0]} barSize={50}>
-                          {revenueData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.total > 0 ? "#10b981" : "#e2e8f0"} />))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )
-                )}
+              <div className="w-full flex-1"> 
+                {!hasData ? (<div className="w-full h-full flex flex-col items-center justify-center text-slate-400"><span className="material-icons-outlined text-4xl mb-2 opacity-50">analytics</span><p className="text-sm font-medium">Belum ada transaksi lunas minggu ini.</p></div>) : (isMounted && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={revenueData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(value) => `${value / 1000}k`} /><Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} labelStyle={{ color: '#64748b', fontSize: '12px', marginBottom: '8px' }} itemStyle={{ color: '#4f46e5', fontWeight: 'bold', fontSize: '14px' }} formatter={(value: any) => [formatRp(Number(value) || 0), "Lunas"]} /><Bar dataKey="total" radius={[8, 8, 0, 0]} barSize={50}>{revenueData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.total > 0 ? "#10b981" : "#e2e8f0"} />))}</Bar></BarChart>
+                  </ResponsiveContainer>
+                ))}
               </div>
             </div>
+
+            {/* 🏆 LEADERBOARDS CRM */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
+              {/* TOP 5 PELANGGAN LOYAL */}
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full min-w-0">
+                <div className="mb-4">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-amber-500">emoji_events</span> Top 5 Pelanggan Loyal</h3>
+                  <p className="text-[10px] sm:text-xs text-slate-500">Berdasarkan total rupiah transaksi lunas.</p>
+                </div>
+                <div className="space-y-3">
+                  {topCustomers.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">Belum ada data pelanggan.</p> : topCustomers.map((c, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 border border-slate-100 rounded-xl bg-slate-50/50 hover:bg-white transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${i === 0 ? 'bg-amber-100 text-amber-600' : (i === 1 ? 'bg-slate-200 text-slate-600' : (i === 2 ? 'bg-orange-100 text-orange-600' : 'bg-indigo-50 text-indigo-400'))}`}>{i + 1}</div>
+                        <div className="min-w-0"><p className="text-sm font-bold text-slate-800 truncate">{c.name}</p><p className="text-[10px] text-slate-500 truncate">{c.phone || "Tidak ada HP"}</p></div>
+                      </div>
+                      <div className="text-right shrink-0"><p className="text-sm font-bold text-emerald-600">{formatRp(c.totalSpent)}</p><p className="text-[10px] text-slate-400">{c.orderCount} Nota</p></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* TOP 5 DAERAH */}
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6 w-full min-w-0">
+                <div className="mb-4 flex justify-between items-start">
+                  <div>
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-blue-500">map</span> Top 5 Daerah Pelanggan</h3>
+                    <p className="text-[10px] sm:text-xs text-slate-500">Persiapan Data WebGIS Phase 2.</p>
+                  </div>
+                  <span className="bg-blue-50 text-blue-600 text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-widest animate-pulse">Heatmap Data</span>
+                </div>
+                <div className="space-y-3">
+                  {topAreas.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">Belum ada data daerah tersimpan.</p> : topAreas.map((a, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 border border-slate-100 rounded-xl bg-slate-50/50 hover:bg-white transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-500 flex items-center justify-center shrink-0"><span className="material-icons-outlined text-[16px]">place</span></div>
+                        <p className="text-sm font-bold text-slate-800 truncate uppercase">{a.area}</p>
+                      </div>
+                      <div className="bg-white border border-slate-200 px-3 py-1 rounded-lg text-xs font-bold text-slate-600 shadow-sm shrink-0">{a.count} Pesanan</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
           </div>
         )}
 
-        {/* ✅ VIEW 2: MARKETING (DIPERBAIKI AGAR BISA SCROLL DI DALAM KOTAK) */}
+        {/* VIEW 2: MARKETING (TARGET PENERIMA WA) */}
         {currentView === "marketing" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 animate-in fade-in duration-300 min-w-0">
             {!fonnteToken && (
@@ -711,7 +824,6 @@ export default function ClientDashboard() {
                 <div className="mb-4 shrink-0"><h3 className="font-bold text-slate-800 flex items-center gap-2"><span className="material-icons-outlined text-emerald-500">contacts</span> Target Penerima</h3><p className="text-xs text-slate-500 mt-1">Sistem mengambil kontak unik.</p></div>
                 <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-slate-200 mb-3 shadow-sm shrink-0"><div className="flex items-center gap-2"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.length === uniqueCustomers.length && uniqueCustomers.length > 0} onChange={handleSelectAllMarketing}/> <span className="text-xs font-bold text-slate-700">Pilih Semua</span></div><span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-1 rounded-md">{selectedMarketingCustomers.length} Terpilih</span></div>
                 
-                {/* INI BAGIAN YANG DIPERBAIKI: Tambah overflow-y-auto dan min-h-0 */}
                 <div className="flex-1 overflow-y-auto bg-white border border-slate-200 rounded-xl min-h-0">
                   {uniqueCustomers.length === 0 ? (<div className="p-6 text-center text-xs text-slate-400">Belum ada data pelanggan.</div>) : (uniqueCustomers.map((c, idx) => (<label key={idx} className="flex items-center gap-3 p-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"><input type="checkbox" className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer" checked={selectedMarketingCustomers.includes(c.phone)} onChange={() => handleToggleMarketingCustomer(c.phone)}/><div className="min-w-0"><p className="text-sm font-bold text-slate-800 truncate">{c.name}</p><p className="text-xs text-slate-500 font-medium truncate">{c.phone}</p></div></label>)))}
                 </div>
@@ -735,27 +847,53 @@ export default function ClientDashboard() {
           </div>
         )}
 
-        {/* VIEW 3: PENGATURAN TOKO (DENGAN PROMO) */}
+        {/* VIEW 3: PENGATURAN TOKO (DENGAN MANAJEMEN PROMO CERDAS) */}
         {currentView === "settings" && (
           <div className="w-full px-4 sm:px-8 xl:px-10 pb-10 space-y-6 animate-in fade-in duration-300 min-w-0">
             
-            {/* MANAJEMEN PROMO */}
+            {/* ✅ MANAJEMEN PROMO (DENGAN PILIHAN PELAYANAN) */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 sm:p-8 w-full min-w-0">
               <h2 className="font-bold text-base sm:text-lg text-slate-800 mb-2 flex items-center gap-2"><span className="material-icons-outlined text-pink-500">local_offer</span> Manajemen Promo & Diskon</h2>
-              <p className="text-xs text-slate-500 mb-6">Buat promo menarik untuk pelanggan Anda. Diskon dapat diterapkan di kasir.</p>
+              <p className="text-xs text-slate-500 mb-6">Buat promo dan pilih layanan spesifik mana saja yang berhak mendapatkan diskon tersebut.</p>
               
-              <div className="bg-pink-50/50 p-4 rounded-xl border border-pink-100 mb-6 flex flex-col lg:flex-row gap-3 items-end">
-                <div className="w-full lg:w-1/3"><label className="text-[10px] font-bold text-slate-500 uppercase">Nama Promo</label><input value={newPromoName} onChange={e=>setNewPromoName(e.target.value)} type="text" className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none focus:border-pink-400 bg-white" placeholder="Cth: Promo Ramadhan"/></div>
-                <div className="w-full lg:w-1/4"><label className="text-[10px] font-bold text-slate-500 uppercase">Nilai Potongan</label><input value={newPromoValue} onChange={e=>setNewPromoValue(e.target.value)} type="number" className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none focus:border-pink-400 bg-white" placeholder="10"/></div>
-                <div className="w-full lg:w-1/4"><label className="text-[10px] font-bold text-slate-500 uppercase">Tipe Diskon</label><select value={newPromoType} onChange={e=>setNewPromoType(e.target.value)} className="w-full text-sm py-2.5 px-3 border border-slate-200 rounded-lg outline-none bg-white focus:border-pink-400"><option value="percent">Persentase (%)</option><option value="fixed">Rupiah (Rp)</option></select></div>
-                <button onClick={handleAddPromo} className="w-full lg:w-auto bg-pink-500 hover:bg-pink-600 text-white font-bold py-2.5 px-6 rounded-lg text-sm transition-colors shadow-sm shrink-0">Buat Promo</button>
+              <div className="bg-pink-50/40 p-4 sm:p-6 rounded-2xl border border-pink-100 mb-6 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+                  <div className="space-y-1.5"><label className="text-[10px] font-bold text-pink-700 uppercase tracking-widest">Nama Promo</label><input value={newPromoName} onChange={e=>setNewPromoName(e.target.value)} type="text" className="w-full text-sm py-2.5 px-3 border border-pink-200 rounded-lg outline-none focus:border-pink-500 focus:ring-2 focus:ring-pink-200 bg-white transition-all" placeholder="Cth: Promo Ramadhan"/></div>
+                  <div className="space-y-1.5"><label className="text-[10px] font-bold text-pink-700 uppercase tracking-widest">Nilai Potongan</label><input value={newPromoValue} onChange={e=>setNewPromoValue(e.target.value)} type="number" className="w-full text-sm py-2.5 px-3 border border-pink-200 rounded-lg outline-none focus:border-pink-500 focus:ring-2 focus:ring-pink-200 bg-white transition-all" placeholder="Misal: 3000"/></div>
+                  <div className="space-y-1.5"><label className="text-[10px] font-bold text-pink-700 uppercase tracking-widest">Tipe Diskon</label><select value={newPromoType} onChange={e=>setNewPromoType(e.target.value)} className="w-full text-sm py-2.5 px-3 border border-pink-200 rounded-lg outline-none focus:border-pink-500 bg-white transition-all cursor-pointer"><option value="percent">Persentase (%)</option><option value="fixed">Rupiah (Rp)</option></select></div>
+                </div>
+
+                {/* AREA CHECKBOX PELAYANAN */}
+                <div className="pt-3 border-t border-pink-200/60 mt-4">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase mb-3 block">Promo ini berlaku untuk layanan:</label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {storeServices.map(svc => (
+                      <label key={svc.id} className={`flex items-center gap-2 p-2.5 rounded-xl border-2 cursor-pointer transition-all ${newPromoTargetServices.includes(svc.id) ? 'bg-pink-100/50 border-pink-400 text-pink-800 shadow-sm' : 'bg-white border-transparent shadow-sm text-slate-600 hover:border-pink-200'}`}>
+                        <input type="checkbox" checked={newPromoTargetServices.includes(svc.id)} onChange={()=>handleTogglePromoTarget(svc.id)} className="w-4 h-4 accent-pink-500 cursor-pointer"/>
+                        <span className="text-[11px] sm:text-xs font-bold truncate">{svc.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <button onClick={handleAddPromo} className="w-full sm:w-auto bg-pink-500 hover:bg-pink-600 text-white font-bold py-3 px-8 rounded-xl text-sm transition-all shadow-lg shadow-pink-500/30 active:scale-95">Buat Promo Aktif</button>
+                </div>
               </div>
 
-              <div className="space-y-2">
-                {storePromos.length === 0 ? <p className="text-xs text-slate-400 italic">Belum ada promo aktif.</p> : storePromos.map(p => (
-                  <div key={p.id} className="flex justify-between items-center p-3 border border-slate-200 rounded-xl hover:bg-slate-50">
-                    <div><span className="font-bold text-slate-800 text-sm">{p.name}</span> <span className="bg-pink-100 text-pink-600 text-[10px] font-bold px-2 py-0.5 rounded-md ml-2">{p.type === 'percent' ? `Diskon ${p.value}%` : `Potongan Rp ${p.value}`}</span></div>
-                    <button onClick={() => handleDeletePromo(p.id)} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"><span className="material-icons-outlined text-[18px]">delete</span></button>
+              <div className="space-y-3">
+                {storePromos.length === 0 ? <p className="text-xs text-slate-400 italic bg-slate-50 p-4 rounded-xl text-center border border-slate-100">Belum ada promo aktif di toko ini.</p> : storePromos.map(p => (
+                  <div key={p.id} className="flex justify-between items-center p-4 border border-slate-200 rounded-2xl hover:bg-slate-50 transition-colors shadow-sm">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-800 text-sm">{p.name}</span> 
+                        <span className="bg-pink-100 text-pink-700 text-[10px] font-black tracking-widest px-2.5 py-1 rounded-md uppercase">{p.type === 'percent' ? `Diskon ${p.value}%` : `Potongan Rp ${p.value}`}</span>
+                      </div>
+                      <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 mt-1.5 uppercase tracking-wider">
+                        Target: <span className="text-indigo-500">{p.targetServices && p.targetServices.length > 0 ? p.targetServices.map((id:string) => storeServices.find((s:any)=>s.id===id)?.name).filter(Boolean).join(', ') : 'Semua Layanan'}</span>
+                      </p>
+                    </div>
+                    <button onClick={() => handleDeletePromo(p.id)} className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 bg-white border border-slate-200 hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-all shadow-sm"><span className="material-icons-outlined text-[18px]">delete</span></button>
                   </div>
                 ))}
               </div>
@@ -848,8 +986,58 @@ export default function ClientDashboard() {
                   <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-slate-200/60 w-full">
                     <h3 className="font-bold text-slate-800 text-sm tracking-wide mb-3 sm:mb-4">1. Identitas Pelanggan</h3>
                     <div className="space-y-3 w-full">
-                      <div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nama Lengkap</label><input value={customerName} onChange={(e)=>setCustomerName(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Masukkan nama..."/></div>
-                      <div className="space-y-1.5 w-full"><label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nomor WhatsApp</label><input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/></div>
+                      
+                      {/* AUTOCOMPLETE INPUT NAMA */}
+                      <div className="space-y-1.5 w-full relative">
+                        <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nama Lengkap</label>
+                        <input 
+                          value={customerName} 
+                          onChange={(e) => {
+                            setCustomerName(e.target.value);
+                            setShowSuggestions(true);
+                          }}
+                          onFocus={() => setShowSuggestions(true)}
+                          onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" 
+                          type="text" placeholder="Masukkan nama..."
+                        />
+                        
+                        {/* DROPDOWN SUGGESTION */}
+                        {showSuggestions && filteredCustomers.length > 0 && (
+                          <div className="absolute z-50 w-full bg-white border border-slate-200 rounded-lg shadow-xl mt-1 max-h-48 overflow-y-auto top-[60px]">
+                            {filteredCustomers.map((c, i) => (
+                              <div 
+                                key={i} 
+                                onMouseDown={(e) => {
+                                  e.preventDefault(); 
+                                  handleSelectSuggestedCustomer(c.name, c.phone, c.area);
+                                }}
+                                className="p-3 border-b border-slate-50 hover:bg-indigo-50 cursor-pointer flex justify-between items-center group transition-colors"
+                              >
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-bold text-slate-800 group-hover:text-indigo-700">{c.name}</span>
+                                  <span className="text-[10px] font-medium text-slate-400">
+                                    {c.phone || "Tidak ada no HP"} {c.area && `• ${c.area}`}
+                                  </span>
+                                </div>
+                                <span className="material-icons-outlined text-slate-300 group-hover:text-indigo-400 text-[16px]">history</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-1.5 w-full">
+                        <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Nomor WhatsApp</label>
+                        <input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/>
+                      </div>
+
+                      {/* 📍 INPUT BARU: DAERAH / KECAMATAN */}
+                      <div className="space-y-1.5 w-full">
+                        <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1"><span className="material-icons-outlined text-[12px]">place</span> Daerah / Kecamatan</label>
+                        <input value={customerArea} onChange={(e)=>setCustomerArea(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Contoh: Tembung, Pancing..."/>
+                      </div>
+
                     </div>
                   </div>
                 </div>
