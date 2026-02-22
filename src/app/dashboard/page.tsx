@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { auth, db } from "../../lib/firebase"; 
 import { useRouter } from "next/navigation";
-// 🔥 PENAMBAHAN 'limit' DI SINI
 import { collection, addDoc, updateDoc, doc, deleteDoc, setDoc, onSnapshot, query, where, orderBy, limit, serverTimestamp } from "firebase/firestore";
 // IMPORT LIBRARY GRAFIK
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -61,11 +60,10 @@ export default function ClientDashboard() {
   const [customServicePrice, setCustomServicePrice] = useState<number | "">("");
   const [inputValue, setInputValue] = useState<number | "">(1); 
   
-  // 🛒 STATE KERANJANG (CART)
+  // 🛒 STATE KERANJANG & DISKON MANUAL
   const [cart, setCart] = useState<any[]>([]);
-  
-  // --- STATE KASIR (PEMBAYARAN & PROMO) ---
   const [selectedPromoId, setSelectedPromoId] = useState("");
+  const [customDiscount, setCustomDiscount] = useState<number | "">(""); 
   const [isPaidNow, setIsPaidNow] = useState(true); 
 
   // --- STATE PENGATURAN LAYANAN & PROMO---
@@ -100,12 +98,11 @@ export default function ClientDashboard() {
     if (!user?.email) return;
     const userEmail = user.email as string;
 
-    // 🔥 KUNCI PERCEPATAN: Tambahkan limit(100)
     const qOrders = query(
       collection(db, "orders"), 
       where("userEmail", "==", userEmail), 
       orderBy("createdAt", "desc"),
-      limit(100) // 👈 Mengambil maksimal 100 nota terbaru
+      limit(100)
     );
 
     const unsubOrders = onSnapshot(qOrders, (snapshot) => {
@@ -364,28 +361,22 @@ export default function ClientDashboard() {
     let activeBasePrice = 0; 
     let activeUnit = "Kg"; 
     
-    if (selectedServiceId === "custom") { 
-      activeServiceName = customServiceName || "Layanan Kustom"; 
-      activeBasePrice = Number(customServicePrice) || 0; 
-      activeUnit = "Unit"; 
-    } else { 
-      const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0]; 
-      if (s) { 
-        activeServiceName = s.name; 
-        activeUnit = s.unit;
-        let qty = Number(inputValue) || 0;
-        if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
+    const s = storeServices.find(svc => svc.id === selectedServiceId) || storeServices[0]; 
+    if (s) { 
+      activeServiceName = s.name; 
+      activeUnit = s.unit;
+      let qty = Number(inputValue) || 0;
+      if (qty <= 0) { alert("Masukkan kuantitas!"); return; }
 
-        if (s.type === "load") { 
-          activeBasePrice = Math.ceil(qty / s.capacity) * s.price; 
-        } else { 
-          let effectiveVal = Math.max(qty, s.minOrder || 1);
-          activeBasePrice = effectiveVal * s.price; 
-        }
-      } 
-    }
+      if (s.type === "load") { 
+        activeBasePrice = Math.ceil(qty / s.capacity) * s.price; 
+      } else { 
+        let effectiveVal = Math.max(qty, s.minOrder || 1);
+        activeBasePrice = effectiveVal * s.price; 
+      }
+    } 
 
-    if (activeBasePrice === 0 && selectedServiceId !== "custom") return;
+    if (activeBasePrice === 0) return;
 
     setCart([...cart, { 
       id: Date.now().toString(), 
@@ -396,37 +387,40 @@ export default function ClientDashboard() {
       basePrice: activeBasePrice,
       totalPrice: activeBasePrice 
     }]);
+    
     setInputValue(1);
-    if(selectedServiceId === "custom") {
-      setCustomServiceName("");
-      setCustomServicePrice("");
-    }
   };
 
   const handleRemoveFromCart = (idToRemove: string) => {
     setCart(cart.filter(item => item.id !== idToRemove));
   };
 
-  // 🧠 KALKULASI DISKON CERDAS
+  // 🧠 KALKULASI DISKON CERDAS (PROMO SISTEM + MANUAL)
   let totalKotor = cart.reduce((s, i) => s + i.basePrice, 0);
-  let discountTotal = 0;
-  const activePromo = storePromos.find(p => p.id === selectedPromoId);
+  let promoDiscountTotal = 0;
   
+  // 1. Hitung Promo Sistem Dulu
+  const activePromo = storePromos.find(p => p.id === selectedPromoId);
   if (activePromo && activePromo.targetServices) {
     cart.forEach(item => {
       if (activePromo.targetServices.includes(item.serviceId)) {
         if (activePromo.type === "percent") {
-          discountTotal += (item.basePrice * activePromo.value) / 100;
+          promoDiscountTotal += (item.basePrice * activePromo.value) / 100;
         } else {
           const svc = storeServices.find(s => s.id === item.serviceId);
           const multiplier = (svc && svc.price > 0) ? (item.basePrice / svc.price) : 1;
-          discountTotal += (activePromo.value * multiplier); 
+          promoDiscountTotal += (activePromo.value * multiplier); 
         }
       }
     });
   }
   
-  const grandTotal = Math.max(0, totalKotor - discountTotal);
+  // 2. Tambahkan Potongan Manual (Harga Kasihan)
+  let manualDiscountVal = Number(customDiscount) || 0;
+  
+  // 🔥 FIX: Variabel ini yang sebelumnya bernama discountTotal, sekarang diperbaiki
+  let totalDiscount = promoDiscountTotal + manualDiscountVal;
+  const grandTotal = Math.max(0, totalKotor - totalDiscount);
 
   // --- FUNGSI SIMPAN ORDER FINAL ---
   const handleSaveOrder = async (shouldPrint: boolean) => {
@@ -452,7 +446,7 @@ export default function ClientDashboard() {
         dateIn: formattedDate, 
         dateOut: null, 
         totalPrice: grandTotal,
-        discountGiven: discountTotal, 
+        discountGiven: totalDiscount, // Gabungan diskon promo & manual
         cartDetails: cart, 
         userEmail: user?.email, 
         createdAt: serverTimestamp() 
@@ -460,13 +454,13 @@ export default function ClientDashboard() {
       
       await addDoc(collection(db, "orders"), newOrderData);
       
-      if (shouldPrint) printThermalReceipt(newOrderData, cart, discountTotal, grandTotal, isPaidNow);
+      if (shouldPrint) printThermalReceipt(newOrderData, cart, totalDiscount, grandTotal, isPaidNow);
       
       // Reset Modal & Keranjang
       setIsOrderModalOpen(false); 
       setCustomerName(""); setCustomerPhone(""); setCustomerArea(""); 
       setShowSuggestions(false); 
-      setCart([]); setInputValue(1); setSelectedPromoId(""); setIsPaidNow(true);
+      setCart([]); setInputValue(1); setSelectedPromoId(""); setCustomDiscount(""); setIsPaidNow(true);
       if(storeServices.length > 0) setSelectedServiceId(storeServices[0].id);
     } catch (error) { 
       alert("Gagal menyimpan pesanan."); 
@@ -483,7 +477,7 @@ export default function ClientDashboard() {
     const logoHtml = storeLogoUrl ? `<div style="text-align:center; margin-bottom:10px;"><img src="${storeLogoUrl}" style="max-width:80px; max-height:80px; filter: grayscale(100%);" alt="Logo"/></div>` : '';
     const cartHtml = cartItems.map(item => `<div class="flex-between" style="font-size:10px;margin-top:4px;"><span>${item.serviceName} (${item.qty}${item.unit})</span><span>${formatRp(item.basePrice)}</span></div>`).join('');
     
-    const discountHtml = discount > 0 ? `<div class="flex-between" style="font-size:10px;margin-top:4px;color:#555;"><span>Diskon Promo</span><span>-${formatRp(discount)}</span></div>` : '';
+    const discountHtml = discount > 0 ? `<div class="flex-between" style="font-size:10px;margin-top:4px;color:#555;"><span>Diskon/Potongan</span><span>-${formatRp(discount)}</span></div>` : '';
     const paymentStatusHtml = paidNow ? `<div style="text-align:center; font-weight:bold; font-size:12px; margin-top:8px; border: 1px solid #000; padding: 2px;">LUNAS</div>` : `<div style="text-align:center; font-weight:bold; font-size:12px; margin-top:8px; border: 1px dotted #000; padding: 2px;">BELUM BAYAR (TAGIHAN)</div>`;
 
     const html = `<html><head><style>@page { margin: 0; } body { font-family: monospace; width: 58mm; padding: 10px; font-size: 12px; color: #000; } .flex-between { display: flex; justify-content: space-between; }</style></head><body>
@@ -1008,6 +1002,7 @@ export default function ClientDashboard() {
                             {filteredCustomers.map((c, i) => (
                               <div 
                                 key={i} 
+                                // 🔥 KUNCI PERBAIKAN: Gunakan onMouseDown dan preventDefault agar onBlur input tidak jalan duluan
                                 onMouseDown={(e) => {
                                   e.preventDefault(); 
                                   handleSelectSuggestedCustomer(c.name, c.phone, c.area);
@@ -1032,7 +1027,7 @@ export default function ClientDashboard() {
                         <input value={customerPhone} onChange={(e)=>setCustomerPhone(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="tel" placeholder="Contoh: 081234567..."/>
                       </div>
 
-                      {/* 📍 INPUT BARU: DAERAH / KECAMATAN */}
+                      {/* 📍 INPUT DAERAH / KECAMATAN */}
                       <div className="space-y-1.5 w-full">
                         <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1"><span className="material-icons-outlined text-[12px]">place</span> Daerah / Kecamatan</label>
                         <input value={customerArea} onChange={(e)=>setCustomerArea(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none" type="text" placeholder="Contoh: Tembung, Pancing..."/>
@@ -1048,7 +1043,17 @@ export default function ClientDashboard() {
                   
                   {/* Grid Katalog */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 w-full">
-                    {storeServices.map((s) => (<button key={s.id} onClick={() => setSelectedServiceId(s.id)} className={`relative bg-white p-2.5 rounded-xl border-2 shadow-sm text-left group transition-all min-w-0 ${selectedServiceId === s.id ? 'border-indigo-600 bg-indigo-50/30' : 'border-transparent border-slate-200'}`}><div className={`w-6 h-6 rounded-md flex items-center justify-center mb-1.5 ${selectedServiceId === s.id ? 'bg-indigo-100' : 'bg-slate-50'}`}><span className={`material-icons-outlined text-[14px] ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}>{s.icon}</span></div><h4 className="font-bold text-slate-800 text-[10px] mb-0.5 line-clamp-1">{s.name}</h4><div className={`font-bold text-[9px] flex justify-between ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}><span>{formatRp(s.price)}</span><span className="font-normal opacity-70">/{s.unit}</span></div></button>))}
+                    {storeServices.map((s) => (
+                      <button key={s.id} onClick={() => setSelectedServiceId(s.id)} className={`relative bg-white p-2.5 rounded-xl border-2 shadow-sm text-left group transition-all min-w-0 ${selectedServiceId === s.id ? 'border-indigo-600 bg-indigo-50/30' : 'border-transparent border-slate-200'}`}>
+                        <div className={`w-6 h-6 rounded-md flex items-center justify-center mb-1.5 ${selectedServiceId === s.id ? 'bg-indigo-100' : 'bg-slate-50'}`}>
+                          <span className={`material-icons-outlined text-[14px] ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}>{s.icon}</span>
+                        </div>
+                        <h4 className="font-bold text-slate-800 text-[10px] mb-0.5 line-clamp-1">{s.name}</h4>
+                        <div className={`font-bold text-[9px] flex justify-between ${selectedServiceId === s.id ? 'text-indigo-600' : 'text-slate-500'}`}>
+                          <span>{formatRp(s.price)}</span><span className="font-normal opacity-70">/{s.unit}</span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
 
                   {/* Area Kuantitas */}
@@ -1098,13 +1103,21 @@ export default function ClientDashboard() {
                     {/* Footer Keranjang: Promo, Pembayaran & Simpan */}
                     <div className="p-4 sm:p-5 bg-white border-t border-slate-200 mt-auto w-full">
                       
-                      {/* Terapkan Promo */}
-                      <div className="mb-4">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Terapkan Promo</label>
-                        <select value={selectedPromoId} onChange={e=>setSelectedPromoId(e.target.value)} className="w-full text-xs font-bold text-indigo-600 border border-indigo-200 p-2 rounded-lg bg-indigo-50 outline-none">
-                          <option value="">-- Tidak Ada Promo --</option>
-                          {storePromos.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
+                      {/* Terapkan Promo & Diskon Manual */}
+                      <div className="space-y-3 mb-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Terapkan Promo</label>
+                          <select value={selectedPromoId} onChange={e=>setSelectedPromoId(e.target.value)} className="w-full text-xs font-bold text-indigo-600 border border-indigo-200 p-2 rounded-lg bg-indigo-50 outline-none">
+                            <option value="">-- Tidak Ada Promo --</option>
+                            {storePromos.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                        </div>
+                        
+                        {/* 💡 INPUT DISKON MANUAL DI SINI */}
+                        <div>
+                           <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Potongan Manual (Harga Kawan)</label>
+                           <input type="number" value={customDiscount} onChange={(e) => setCustomDiscount(parseFloat(e.target.value) || "")} placeholder="Misal: 5000" className="w-full text-xs font-bold text-pink-600 border border-pink-200 p-2 rounded-lg bg-pink-50 outline-none focus:border-pink-400" />
+                        </div>
                       </div>
 
                       {/* Status Pembayaran Lunas / Hutang */}
@@ -1118,7 +1131,7 @@ export default function ClientDashboard() {
 
                       <div className="space-y-1 mb-4">
                         <div className="flex justify-between text-[11px] text-slate-500 font-medium"><span>Subtotal</span><span>{formatRp(totalKotor)}</span></div>
-                        {discountTotal > 0 && <div className="flex justify-between text-[11px] text-pink-500 font-bold"><span>Diskon Promo</span><span>-{formatRp(discountTotal)}</span></div>}
+                        {totalDiscount > 0 && <div className="flex justify-between text-[11px] text-pink-500 font-bold"><span>Total Potongan</span><span>-{formatRp(totalDiscount)}</span></div>}
                         <div className="flex justify-between items-end border-t border-slate-100 pt-2 mt-2">
                           <span className="font-bold text-slate-800 text-xs">TOTAL AKHIR</span>
                           <span className="text-xl font-black text-indigo-600 tracking-tight">{formatRp(grandTotal)}</span>
